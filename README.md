@@ -124,6 +124,8 @@ dsh plugin --profile desktop add "link:C:\Users\zydxn77\OneDrive\文档\deepseek
 ### 措辞：一趟只有一件必须做的事
 
 - **主事恒定**：写今天那份日记。其余（读昨天 / 看工作区 / 记期待）都标成可做可不做
+- **报时只说事实**：`【到点了】21:31。` —— **不说「醒了」**。融合成一条时间线后上下文是连的、
+  人是同一个，她根本没睡，"醒"是个对不上的动作
 - **深夜短版**：22 点以后只写日记，不折腾
 - **三套开场/收尾轮换**，按「第几趟」取模 —— 确定性，不是随机。同一个数字永远同一句话
 - **工作区变化只给素材**：「工作区里最近动过这些」，不许写成「我扫描了工作区发现…」
@@ -254,7 +256,7 @@ lingxi-companion/
 │   ├── prompt.js         # 唤醒提示拼装（拟人化全在这里）
 │   └── spine.js          # 开新会话 + 起标题 + 说第一句 + 三道防撞车
 └── tests/
-    ├── selftest.mjs      # 离线自检，105 项
+    ├── selftest.mjs      # 离线自检，107 项
     └── smoke-dsh-stub.mjs # 桩件冒烟：五个场景
 ```
 
@@ -279,7 +281,7 @@ default-workspace/
 
 ```powershell
 $node = "C:\Users\zydxn77\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\node\bin\node.exe"
-& $node tests\selftest.mjs          # 105 项，逻辑与措辞
+& $node tests\selftest.mjs          # 107 项，逻辑与措辞
 & $node tests\smoke-dsh-stub.mjs    # 冒烟，五个场景，自己建临时目录
 ```
 
