@@ -1,0 +1,6 @@
+# 测试与运行时产物
+node_modules/
+*.tmp
+*.log
+
+# 别把账本提交进来 —— 那在 default-workspace/.lingxi/，本来就不在这个目录内

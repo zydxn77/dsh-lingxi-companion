@@ -1,0 +1,14 @@
+# ============================================================================
+# dsh-lingxi-companion —— bundle patch
+# ============================================================================
+# ⚠️ `name:` 必须与安装后的**包名**完全一致（这里是 dsh-lingxi-companion）。
+#   写错的表现是「装上了但那一行永远 pending / 什么都不发生」，不报错。
+#
+# 安装：
+#   dsh plugin --profile desktop add "link:C:\Users\<你>\...\default-workspace\lingxi-companion"
+# 装完要重启 DSH（bundle 层要重启才组装）。
+# ============================================================================
+
+- insert:
+    - id: dsh-lingxi-companion
+      name: dsh-lingxi-companion
