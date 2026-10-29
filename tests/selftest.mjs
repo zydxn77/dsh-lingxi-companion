@@ -15,7 +15,7 @@ import { extractSection } from '../lib/text.js'
 import { extractDisagreements } from '../lib/disagree.js'
 import { decide, inWindow, pickWakeMs, pickWakeTimes, dayStartMs, hhmm, windowBounds } from '../lib/clock.js'
 import { daysSince } from '../lib/mood.js'
-import { loadSayBox, sayDue, sayWireText, dropSay, SAY_MARK, SAY_SAFETY_PER_DAY } from '../lib/outbox.js'
+import { loadSayBox, sayDue, sayWireText, dropSay, sayBoxPath, SAY_MARK, SAY_SAFETY_PER_DAY } from '../lib/outbox.js'
 import { monthKey, prevMonthKey, firstLine, buildIndexRows, monthlyDue, monthlyPrompt, summaryPath, indexPath } from '../lib/monthly.js'
 import * as M from '../lib/mood.js'
 import { advance, effectiveInterest, pickForWake, describe } from '../lib/expectations.js'
@@ -1304,6 +1304,16 @@ t('投完删掉那一条，其余不动', () => {
   const after = loadSayBox(file)
   assert.equal(after.length, 1)
   assert.equal(after[0].text, 'B', '剩下的是第二条')
+})
+
+
+t('箱路径必须能算出来（2026-10-29 那条 undefined 的回归）', () => {
+  // 犯过的错：outbox 用了 PROFILE.sayBox，但 profile.js 里没加这个字段 →
+  // sayBoxPath() 拿到 undefined，path.join 抛。而 sayDue 先判时段，
+  // 所以 23:00 之后跑一切正常，白天 9–22 点每分钟刷一条错 —— 这种最难发现。
+  assert.equal(typeof P.DEFAULT_PROFILE.sayBox, 'string')
+  assert.ok(P.DEFAULT_PROFILE.sayBox.length > 0, '默认档案里 sayBox 不能是空串')
+  assert.ok(sayBoxPath().endsWith(P.DEFAULT_PROFILE.sayBox), '箱路径应以 sayBox 结尾')
 })
 
 console.log(`\n═══ ${pass} 通过 / ${fail} 失败 ═══\n`)
