@@ -2,15 +2,15 @@
   "name": "dsh-lingxi-companion",
   "version": "0.1.0",
   "private": true,
-  "description": "灵溪的作息层：让她自己按作息醒来、看昨天、写今天，一天最多主动开口一次。",
-  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "companion", "diary"],
+  "description": "作息层：她自己按作息醒来、看昨天、写今天、留话。人格与机制解耦，默认那一位是灵溪。",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "companion", "diary", "persona"],
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./package.json": "./package.json"
   },
-  "files": ["lib", "cordis.patch.yml", "README.md"],
+  "files": ["lib", "cordis.patch.yml", "README.md", "profile.example.json", "persona"],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

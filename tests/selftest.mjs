@@ -5,40 +5,33 @@
  *
  * 验的是逻辑和措辞，不是「装上去能不能跑」—— 那个只能装上去看。
  */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import assert from 'node:assert/strict'
-import { localDateKey, yesterdayKey, diaryPath, PATHS } from '../lib/home.js'
+import { localDateKey, yesterdayKey, diaryPath, PATHS, readPersona, decidePersonaOwner } from '../lib/home.js'
 import { todayLog } from '../lib/daylog.js'
-import { extractSection } from '../lib/skill.js'
+import { extractSection } from '../lib/text.js'
+import { extractDisagreements } from '../lib/disagree.js'
 import { decide, inWindow, pickWakeMs, pickWakeTimes, dayStartMs, hhmm, windowBounds } from '../lib/clock.js'
-import {
-  moodLines,
-  bandOf,
-  daysSince,
-  canSpeak,
-  computeFreshness,
-  behaviorBranches,
-  branchLines,
-  advanceMood,
-} from '../lib/mood.js'
+import { daysSince } from '../lib/mood.js'
+import { monthKey, prevMonthKey, firstLine, buildIndexRows, monthlyDue, monthlyPrompt, summaryPath, indexPath } from '../lib/monthly.js'
+import * as M from '../lib/mood.js'
 import { advance, effectiveInterest, pickForWake, describe } from '../lib/expectations.js'
 import { TASK_STATES, assignedOpen, selfOpen, taskLines } from '../lib/tasks.js'
-import { TIER_TTL_DAYS, isAlive, renderDossier } from '../lib/dossier.js'
-import { behaviorDice } from '../lib/mood.js'
 import { deriveWindow } from '../lib/presence.js'
-import { buildBelief, phraseBelief } from '../lib/beliefs.js'
 import { recallWeight, touchRecall, recallOne } from '../lib/recall.js'
 import { pickFlashback } from '../lib/flashback.js'
-import {
-  gradeDiary,
-  scaffoldOn,
-  toolFailLines,
-  wrongBeliefLines,
-  resolveBeliefs,
-  guessedDirs,
-} from '../lib/skill.js'
 import { recentChanges } from '../lib/workspace.js'
+import { advanceFeedback, recordComplaint, quietDaysBefore } from '../lib/feedback.js'
+import * as P from '../lib/profile.js'
+import * as F from '../lib/facts.js'
+import * as S from '../lib/style.js'
+import * as R from '../lib/revision.js'
+import * as B from '../lib/board.js'
 import { isOwnSessionPath } from '../lib/spine.js'
-import { buildWakeText } from '../lib/prompt.js'
+import { buildPulse, buildWakeText, buildRoamText, callbackBlock, growthLines } from '../lib/prompt.js'
+import * as RM from '../lib/roam.js'
 import * as C from '../lib/const.js'
 
 let pass = 0
@@ -165,51 +158,43 @@ t('hhmm 补零', () => {
   assert.equal(hhmm(new Date(2026, 9, 26, 9, 4).getTime()), '09:04')
 })
 
-console.log('\n── 心情（措辞是重点）─────────────────────')
-t('三档边界', () => {
-  assert.equal(bandOf(0), 'normal')
-  assert.equal(bandOf(C.SILENT_AFTER_DAYS - 1), 'normal')
-  assert.equal(bandOf(C.SILENT_AFTER_DAYS), 'quiet')
-  assert.equal(bandOf(C.SILENT_STOP_DAYS - 1), 'quiet')
-  assert.equal(bandOf(C.SILENT_STOP_DAYS), 'faint')
-  assert.equal(bandOf(null), 'unknown')
-})
-t('正常时一个字都不说', () => {
-  assert.deepEqual(moodLines(1, null), [])
-})
-t('quiet 档只说事实，不许索取', () => {
-  const s = moodLines(4, null).join('\n')
-  assert.ok(s.includes('上次说话'))
-  for (const bad of ['没有回应你', '在忙吗', '别再问第二次', '需要知道你还在', '主人']) {
-    assert.ok(!s.includes(bad), `不该出现「${bad}」`)
-  }
-})
-t('faint 档不追加情绪勒索', () => {
-  const s = moodLines(9, null).join('\n')
-  assert.ok(s.includes('不是你的过错'))
-  assert.ok(!s.includes('回应你'))
-})
-t('faint 档不许主动开口', () => {
-  assert.equal(canSpeak(9), false)
-  assert.equal(canSpeak(4), true)
-})
-t('恢复转折：上次冷、这次暖', () => {
-  const s = moodLines(1, 6).join('\n')
-  assert.ok(s.includes('他回来了'))
-})
+console.log('\n── 心情层已拆除（架构 §4，2026-10-29）─────')
 t('daysSince 向下取整', () => {
   const now = Date.now()
   assert.equal(daysSince(now - 3 * 86400000, now), 3)
   assert.equal(daysSince(null, now), null)
 })
+t('情绪/关系/熟悉度的函数一律不得再存在', () => {
+  // 文档 §4：任何形式的情绪值、关系深度值、记忆层级字段 —— 删除（不得存在）。
+  // 这条测试是**回归保险**：谁把状态机加回来，这里先炸。
+  for (const gone of ['advanceMood', 'loadMood', 'saveMood', 'computeFreshness',
+                      'behaviorBranches', 'branchLines', 'behaviorDice',
+                      'bandOf', 'canSpeak', 'moodLines']) {
+    assert.equal(typeof M[gone], 'undefined', `mood.js 不该再有 ${gone}`)
+  }
+})
+t('const.js 里不该再有 freshness / affinity 常数', () => {
+  for (const gone of ['FRESHNESS_TAU_MS', 'FRESHNESS_FAMILIAR', 'FRESHNESS_DISTANT',
+                      'AFFINITY_BASELINE', 'AFFINITY_PER_PRESENCE_DAY', 'AFFINITY_DRIFT_PER_DAY']) {
+    assert.equal(typeof C[gone], 'undefined', `const.js 不该再有 ${gone}`)
+  }
+})
 
 console.log('\n── 唤醒提示 ─────────────────────────────')
 const now0 = new Date(2026, 9, 26, 15, 30)
-t('人设在第一行（原版那个 bug 的回归测试）', () => {
+t('宿主已注入人格：唤醒提示里不再重复一份（2026-10-27 定）', () => {
   const text = buildWakeText({ now: now0, plan: { key: '2026-10-26', skip: false, speaks: 0 }, daysSinceHeard: 1 })
-  const firstLine = text.split('\n')[0]
-  assert.ok(firstLine.includes('灵溪'), '第一行必须是人设：' + firstLine.slice(0, 40))
-  assert.ok(!firstLine.includes('生物钟'), '报时不能抢在人设前面')
+  // 宿主每个会话都注入 AGENTS.md；插件再说一遍就是同一段话说两次（今晚实测 1800 字）
+  assert.ok(!text.includes('# 角色层'), '不该再复制一份角色层')
+  assert.ok(!text.includes('北苍灵院'), '不该再复制人设正文')
+  assert.ok(!text.includes('没读到人格文件'), '宿主有人格时不该报缺人设')
+})
+
+t('人格归谁注入：三条分支', () => {
+  assert.equal(decidePersonaOwner({ hasAgentPersona: true, hasCorePersona: true }), 'host', '宿主优先')
+  assert.equal(decidePersonaOwner({ hasAgentPersona: true, hasCorePersona: false }), 'host')
+  assert.equal(decidePersonaOwner({ hasAgentPersona: false, hasCorePersona: true }), 'plugin', '宿主没有就插件顶上')
+  assert.equal(decidePersonaOwner({ hasAgentPersona: false, hasCorePersona: false }), 'none')
 })
 t('报时只说事实，不说「醒了」', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
@@ -231,36 +216,56 @@ t('懒日：只写日记，不做三件事', () => {
 t('正常日：写着第几趟、共几趟', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 1, total: 3 })
   assert.ok(text.includes('第 2 趟（共 3 趟）'))
-  assert.ok(text.includes('还有 1 次'))
+  // 2026-10-27 改：额度从「义务」改成「判断」——
+  //   还剩几趟要说，但必须同时说清「那不是还得再说几次」。
+  assert.ok(text.includes('还剩 1 趟'), '说还剩几趟')
+  assert.ok(text.includes('额度不是义务'), '额度不是义务，这句不能少')
+  assert.ok(text.includes('没有就别开口'), '开口由她定')
 })
-t('最后一趟说「还有 0 次」', () => {
+t('最后一趟也把话说清：只剩 0 趟，不是"还得说 0 次"', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 2, total: 3 })
-  assert.ok(text.includes('还有 0 次'))
+  assert.ok(text.includes('还剩 0 趟'))
+  assert.ok(text.includes('额度不是义务'))
 })
 t('faint 档：提示里也不许开口', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 9, index: 0, total: 1 })
-  assert.ok(!text.includes('次开口'))
-  assert.ok(text.includes('今天不必主动开口'))
+  // 2026-10-29 改：原来断言「faint 档提示里写『今天不必主动开口』」。
+  //   那是沉默惩罚 —— 他越久不来，她越不许说话（架构 §9 明禁），已删。
+  assert.ok(!text.includes('今天不必主动开口'), '不该再按沉默天数劝她别开口')
+  assert.ok(text.includes('开口不开口，这一趟由你定'), '开口与否交给她判断')
 })
 t('多趟日：要求补写而不是重开一份', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 1, total: 3 })
   assert.ok(text.includes('别重开一份'))
 })
-t('不许出现 B 站残留', () => {
+t('不许出现旧流程残留（B站本身现在是故意的，不算残留）', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
-  for (const bad of ['bili', 'B站', 'BV', 'share.via', '主人', 'debrief', 'feed 选题']) {
-    assert.ok(!text.includes(bad), `残留：${bad}`)
+  // 2026-10-27 改：这条原来连 'B站' / 'BV' / 'debrief' 一起禁 ——
+  //   那时 B 站那条线整个被摘掉了。现在它**故意**回来了两处：
+  //   「他这几天看了什么」的摘要，和 L2 里告诉她"可以自己看视频"那条命令。
+  //   所以靶子换回它本来要防的东西：旧的九步流程话术。
+  for (const bad of ['share.via', '主人', 'feed 选题', '夜间流程', '夜间流程走一遍', '--score', '--rank']) {
+    assert.ok(!text.includes(bad), `旧流程残留：${bad}`)
+  }
+  // 但 B站 只能以"她自己的选项/素材"出现，不能带"你要发给谁"这类对外动作
+  for (const bad of ['评论', '私信', '投币', '收藏']) {
+    assert.ok(!text.includes(bad), `不该出现对外写动作：${bad}`)
   }
 })
-t('人设只取角色层，不带长期记忆', () => {
-  const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
-  assert.ok(text.includes('# 角色层：灵溪'))
-  assert.ok(!text.includes('# 长期记忆'), '人设里混进了长期记忆')
-  assert.ok(!text.includes('信用卡'), '人设里混进了账本')
+t('人设切片只取角色层，不带长期记忆（别人接入时的退路）', () => {
+  const p = readPersona(99999)
+  if (!p) return
+  assert.ok(p.includes('# 角色层：灵溪'))
+  assert.ok(!p.includes('# 长期记忆'), '人设里混进了长期记忆')
+  assert.ok(!p.includes('信用卡'), '人设里混进了账本')
 })
 t('给她的那本要有细节，不许只写没事', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
-  assert.ok(text.includes('不许只写'))
+  // 2026-10-27：日记改成 v2.3 四栏，「不许只写」那句措辞换了，改断言四栏都在
+  for (const col of ['今天做了什么', '为什么', '想到什么', '想对他说什么']) {
+    assert.ok(text.includes(`—— ${col} ——`), `提示里缺「${col}」栏`)
+  }
+  assert.ok(text.includes('今天没事'), '得提醒她「今天没事」不算写了')
 })
 
 console.log('\n── 会话归属（踩过的坑）───────────────────')
@@ -274,73 +279,10 @@ t('只看会话目录名，不看整条路径', () => {
   assert.equal(isOwnSessionPath(`${P.replace(/\//g, '\\')}\\lingxi\\session.v4.jsonl.zstd`, 'lingxi'), true)
 })
 
-console.log('\n── 熟悉度与行为分支（铁律 7）──────────────')
-t('freshness 指数衰减', () => {
-  const now = Date.UTC(2026, 9, 26, 12)
-  assert.equal(computeFreshness(now, now).toFixed(3), '1.000')
-  const d3 = computeFreshness(now - 3 * 86400000, now)
-  assert.ok(d3 > 0.35 && d3 < 0.39, `三天应约 0.37，实际 ${d3.toFixed(3)}`)
-  const d7 = computeFreshness(now - 7 * 86400000, now)
-  assert.ok(d7 < 0.11, `七天应低于 0.11，实际 ${d7.toFixed(3)}`)
-})
-t('三分支边界', () => {
-  assert.equal(behaviorBranches(0.9).band, 'familiar')
-  assert.equal(behaviorBranches(0.8).band, 'familiar')
-  assert.equal(behaviorBranches(0.79).band, 'normal')
-  assert.equal(behaviorBranches(0.2).band, 'normal')
-  assert.equal(behaviorBranches(0.19).band, 'distant')
-})
-t('生疏时禁止直接接旧话题', () => {
-  const b = behaviorBranches(0.1)
-  assert.equal(b.canRecallPast, false)
-  assert.equal(b.mustUseTimeAdverb, true)
-  const s = branchLines(b).join('\n')
-  assert.ok(s.includes('时间状语'))
-  assert.ok(!s.includes('表现得'), '不许写成情绪表演指令')
-})
-t('熟时不强制时间状语', () => {
-  const b = behaviorBranches(0.95)
-  assert.equal(b.canRecallPast, true)
-  assert.equal(b.mustUseTimeAdverb, false)
-})
 
-console.log('\n── 心情三维 ─────────────────────────────')
-t('换天才滚 energy，同一天重复跑不会越算越小', () => {
-  const m = { affinity: 0.5, baseEnergy: 0.6, energyDay: '2026-10-25', eventsToday: 2, affinityDay: null, lastInteraction: null }
-  const a = advanceMood(m, { now: new Date(2026, 9, 26, 10).getTime(), lastHeardMs: null })
-  const b = advanceMood(a.mood, { now: new Date(2026, 9, 26, 11).getTime(), lastHeardMs: null })
-  assert.equal(a.mood.energyDay, '2026-10-26')
-  assert.equal(a.energy, b.energy, '同一天应当稳定')
-})
-t('他在场 → affinity 升，一天最多升一次', () => {
-  const heard = new Date(2026, 9, 26, 9).getTime()
-  const m = { affinity: 0.5, baseEnergy: 0.6, energyDay: '2026-10-26', eventsToday: 0, affinityDay: null, lastInteraction: null }
-  const a = advanceMood(m, { now: new Date(2026, 9, 26, 10).getTime(), lastHeardMs: heard })
-  assert.ok(a.affinity > 0.5, '应当上升')
-  const b = advanceMood(a.mood, { now: new Date(2026, 9, 26, 18).getTime(), lastHeardMs: heard })
-  assert.equal(b.affinity, a.affinity, '同一天不该涨第二次')
-})
-t('他不在 → 只朝基线缓慢回落，不暴跌', () => {
-  const m = { affinity: 0.9, baseEnergy: 0.6, energyDay: '2026-10-26', eventsToday: 0, affinityDay: '2026-10-20', lastInteraction: null }
-  const a = advanceMood(m, { now: new Date(2026, 9, 26, 10).getTime(), lastHeardMs: null })
-  assert.ok(a.affinity < 0.9 && a.affinity > 0.85, `应缓慢回落，实际 ${a.affinity}`)
-})
-t('连着动一分钟不算「又出现一次」', () => {
-  const t0 = new Date(2026, 9, 26, 10).getTime()
-  const m = { affinity: 0.5, baseEnergy: 0.6, energyDay: '2026-10-26', eventsToday: 0, affinityDay: '2026-10-26', lastInteraction: null }
-  const a = advanceMood(m, { now: t0, lastHeardMs: t0 })
-  const b = advanceMood(a.mood, { now: t0 + 60_000, lastHeardMs: t0 + 60_000 })
-  const c = advanceMood(b.mood, { now: t0 + 120_000, lastHeardMs: t0 + 120_000 })
-  assert.equal(c.mood.eventsToday, 1, `每分钟一次不该累加，实际 ${c.mood.eventsToday}`)
-})
-t('隔半小时以上再出现才 +1', () => {
-  const t0 = new Date(2026, 9, 26, 10).getTime()
-  const m = { affinity: 0.5, baseEnergy: 0.6, energyDay: '2026-10-26', eventsToday: 0, affinityDay: '2026-10-26', lastInteraction: null }
-  const a = advanceMood(m, { now: t0, lastHeardMs: t0 })
-  const later = t0 + 45 * 60_000
-  const b = advanceMood(a.mood, { now: later, lastHeardMs: later })
-  assert.equal(b.mood.eventsToday, 2, `隔了 45 分钟该算第二次，实际 ${b.mood.eventsToday}`)
-})
+// 2026-10-29 删：熟悉度（freshness）与行为分支（behaviorBranches）的 7 条测试。
+//   理由见 lib/mood.js 顶部：那是「代码替她判断她现在是什么状态」，架构 §2 铁律 2 / §4 明令拆除。
+//   留了回归保险在上面（「情绪/关系/熟悉度的函数一律不得再存在」）。
 
 console.log('\n── 期待状态机 ───────────────────────────')
 t('卡住七天 → 搁置', () => {
@@ -484,10 +426,24 @@ t('白天不是短版', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
   assert.ok(!text.includes('写完就睡'))
 })
-t('一趟只有一件必须做的事', () => {
+t('日记是提醒，不是命令（2026-10-29 第三刀）', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
-  assert.ok(text.includes('只有一件事是必须的'))
+  // 原来这条断言「只有一件事是必须的」—— 那是祈使任务，架构 §7.4 明禁。
+  //   现在只陈述日记在哪，写不写归她（§3.2）。
+  assert.ok(!text.includes('必须'), '不该再有祈使的「必须」')
+  assert.ok(text.includes('今天的日记在这儿'), '应当只说日记在哪')
+  assert.ok(text.includes('不写也不算这一趟白醒'), '应当明说可以不写')
   assert.ok(text.includes('其余的都可做可不做'))
+})
+
+t('private 抽屉：只给路径，绝不读正文（2026-10-29 第四刀）', () => {
+  const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
+  assert.ok(text.includes('private'), '要告诉她有这么个抽屉，否则她不知道能藏')
+  // 关键保证（架构 §3.3）：prompt.js 里**根本不该有读取 private 的代码**。
+  //   这比"塞一句话进去看看出不出来"更硬 —— 后者只要今天不读就永远绿。
+  const src = fs.readFileSync(new URL('../lib/prompt.js', import.meta.url), 'utf8')
+  assert.ok(!/readText\([^)]*privateDir/.test(src), 'prompt.js 不许 readText(PATHS.privateDir)')
+  assert.ok(!/readFileSync\([^)]*privateDir/.test(src), 'prompt.js 不许直接读 private 文件')
 })
 t('工作区变化写成素材，不是汇报', () => {
   const text = buildWakeText({
@@ -526,64 +482,6 @@ t('任务段落进了提示', () => {
   assert.ok(text.includes('整理下载夹'))
 })
 
-console.log('\n── 档案三级衰减（8 号）────────────────────')
-t('三级各自的寿命', () => {
-  assert.equal(TIER_TTL_DAYS.identity, Infinity)
-  assert.ok(TIER_TTL_DAYS.preference > TIER_TTL_DAYS.observation)
-  const now = Date.UTC(2026, 9, 26)
-  const mk = (tier, daysAgo) => ({ text: 'x', tier, updated: new Date(now - daysAgo * 86400000).toISOString() })
-  assert.equal(isAlive(mk('identity', 3000), now), true, 'identity 永不衰减')
-  assert.equal(isAlive(mk('preference', 10), now), true)
-  assert.equal(isAlive(mk('preference', 90), now), false)
-  assert.equal(isAlive(mk('observation', 1), now), true)
-  assert.equal(isAlive(mk('observation', 10), now), false)
-})
-t('没有档案时不崩', () => {
-  assert.equal(typeof renderDossier(Date.now(), 1200), 'string')
-})
-
-console.log('\n── 概率行为组（7 号）────────────────────')
-t('energy 低才会懒得看', () => {
-  assert.equal(behaviorDice(0.9, () => 0.01).skipObservation, false, 'energy 高不该跳过观察')
-  assert.equal(behaviorDice(0.1, () => 0.01).skipObservation, true, 'energy 很低 + 掷到 1% 就该跳过')
-})
-t('视而不见只注意到 2~3 件', () => {
-  for (let i = 0; i < 20; i++) {
-    const n = behaviorDice(0.5).noticeCount
-    assert.ok(n >= 2 && n <= 3, `noticeCount 应在 2~3，实际 ${n}`)
-  }
-})
-t('铁律 5：概率掐不掉交代的事', () => {
-  const tasks = {
-    items: [{ topic: '整理下载夹', origin: 'assigned', state: 'blocked', note: '两个文件被占用', updated: '' }],
-  }
-  const text = buildWakeText({
-    now: now0,
-    plan: { skip: false },
-    daysSinceHeard: 1,
-    index: 0,
-    total: 1,
-    tasks,
-    changes: [{ rel: 'a.txt', mtime: Date.now() }],
-    dice: { skipObservation: true, noticeCount: 2, perfunctory: true },
-  })
-  assert.ok(text.includes('他交代的事'), 'assigned 必须照常渲染，不看骰子')
-  assert.ok(text.includes('整理下载夹'))
-  assert.ok(!text.includes('工作区里最近动过这些'), '观察可以被掐掉')
-})
-t('敷衍也不许写「今天没事」', () => {
-  const text = buildWakeText({
-    now: now0,
-    plan: { skip: false },
-    daysSinceHeard: 1,
-    index: 0,
-    total: 1,
-    dice: { skipObservation: false, noticeCount: 3, perfunctory: true },
-  })
-  assert.ok(text.includes('写短一点也行'))
-  assert.ok(text.includes('「今天没事」不算写了'))
-})
-
 console.log('\n── 窗口漂移（10 号）────────────────────')
 t('样本太少不漂', () => {
   assert.equal(deriveWindow(null), null)
@@ -591,16 +489,22 @@ t('样本太少不漂', () => {
   assert.equal(deriveWindow(new Array(24).fill(0.1)), null)
 })
 t('他的活动分布均匀 → 窗口开得很宽，不是缩成一条缝', () => {
-  const win = deriveWindow(new Array(24).fill(1))
+  // 2026-10-27：默认 minSamples 提到 60（实测只有 19 个样本，样本太薄会推出 00–23 的假窗口）。
+  //   这组测的是**漂移算术**，不是门槛，所以显式把门槛压回来。
+  const win = deriveWindow(new Array(24).fill(1), { minSamples: 8 })
   assert.ok(win, '有数据就该给出窗口')
   const s = Number(win.start.slice(0, 2))
   const e = Number(win.end.slice(0, 2))
   assert.ok(e - s >= 12, `均匀分布不该窄于 12 小时，实际 ${win.start}–${win.end}`)
 })
+t('样本太薄 → 宁可不漂（默认门槛 60）', () => {
+  // 24 格各 1 = 24 票，跟现在 19 个会话文件一个量级 —— 必须拒绝漂移
+  assert.equal(deriveWindow(new Array(24).fill(1)), null, '24 票就敢当作息，那是噪声')
+})
 t('集中在白天 → 窗口落在白天', () => {
   const w = new Array(24).fill(0.1)
   for (const h of [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]) w[h] = 5
-  const win = deriveWindow(w)
+  const win = deriveWindow(w, { minSamples: 8 })
   assert.ok(win, '应该漂出一个窗口')
   const s = Number(win.start.slice(0, 2))
   const e = Number(win.end.slice(0, 2))
@@ -618,56 +522,6 @@ t('漂出来的窗口能被抽签用', () => {
   }
 })
 
-console.log('\n── 误解（11 号，置信度门控）──────────────')
-t('置信度 >= 0.5 一律不许说出口', () => {
-  assert.equal(phraseBelief({ text: 'x', confidence: 0.5 }), null)
-  assert.equal(phraseBelief({ text: 'x', confidence: 0.9 }), null)
-  assert.equal(phraseBelief({ text: 'x', confidence: 0.4 }), '我猜——x')
-})
-t('陌生的新目录才猜，提过的不猜', () => {
-  const now = Date.now()
-  const dirs = [{ name: '灵溪插件', mtime: now }]
-  const b = buildBelief({ dirs, knownTopics: [], now })
-  assert.ok(b, '应该能猜')
-  assert.ok(b.confidence < 0.5)
-  const skip = buildBelief({ dirs, knownTopics: ['灵溪插件'], now })
-  assert.equal(skip, null, '期待/任务里提过的目录不该再猜')
-})
-t('名字泛的目录不猜', () => {
-  const now = Date.now()
-  for (const n of ['tmp', 'test', '新建文件夹', 'src']) {
-    assert.equal(buildBelief({ dirs: [{ name: n, mtime: now }], now }), null, `${n} 不该猜`)
-  }
-})
-t('有 manifest 的目录不猜（当天猜错的那次回归）', () => {
-  const now = Date.now()
-  // 2026-10-26：它把当天我们自己搭的 lingxi-companion 猜成「你开了个新东西」
-  const b = buildBelief({ dirs: [{ name: 'lingxi-companion', mtime: now, manifest: true }], now })
-  assert.equal(b, null, '带 package.json / README 的是正经工程，不是随手开的新东西')
-  // 没有 manifest 的照猜
-  const c = buildBelief({ dirs: [{ name: '随手建的', mtime: now, manifest: false }], now })
-  assert.ok(c, '空壳目录仍可猜')
-})
-t('一天最多一条', () => {
-  const now = Date.now()
-  const dirs = [{ name: '新项目', mtime: now }]
-  assert.equal(buildBelief({ dirs, lastBeliefAt: now - 3600_000, now }), null, '刚猜过就别再猜')
-  assert.ok(buildBelief({ dirs, lastBeliefAt: now - 25 * 3600_000, now }), '隔一天可以再猜')
-})
-t('提示里以「不确定」形式出现', () => {
-  const text = buildWakeText({
-    now: now0,
-    plan: { skip: false },
-    daysSinceHeard: 1,
-    index: 0,
-    total: 1,
-    belief: phraseBelief({ text: '你像是开了个新东西', confidence: 0.4 }),
-  })
-  assert.ok(text.includes('（不太确定）'))
-  assert.ok(text.includes('我猜——'))
-  assert.ok(text.includes('不许说成确定的事'))
-})
-
 console.log('\n── L2 能力段（9 号，提示词级）────────────')
 t('写着能自己做什么、以及写操作上限', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
@@ -682,20 +536,6 @@ t('措辞是「分寸」不是「系统禁止」', () => {
 })
 
 console.log('\n── 无意识：情绪噪声 / 闪回 / 梦 ───────────')
-t('换天时会有无因波动', () => {
-  const m = { affinity: 0.5, baseEnergy: 0.6, energyDay: '2026-10-25', eventsToday: 0, affinityDay: null, lastInteraction: null }
-  const hi = advanceMood(m, { now: new Date(2026, 9, 26, 10).getTime(), rng: () => 0.99 })
-  const lo = advanceMood(m, { now: new Date(2026, 9, 26, 10).getTime(), rng: () => 0.01 })
-  assert.notEqual(hi.energy, lo.energy, '同一天同样的输入，不同随机数应该给出不同的值')
-})
-t('无因低落：掷到了就会明显掉一截', () => {
-  const m = { affinity: 0.5, baseEnergy: 0.9, energyDay: '2026-10-25', eventsToday: 0, affinityDay: null, lastInteraction: null }
-  // 第一次调用（0.5）→ 波动中性；第二次（0.01）→ 命中低落
-  let n = 0
-  const rng = () => (n++ === 0 ? 0.5 : 0.01)
-  const r = advanceMood(m, { now: new Date(2026, 9, 26, 10).getTime(), rng })
-  assert.ok(r.energy < 0.85, `应该掉下来，实际 ${r.energy}`)
-})
 t('闪回只从两天以前的日记里抽', () => {
   const fb = pickFlashback(new Date())
   // 现有机只有今天的日记 → 抽不到，返回 null
@@ -714,57 +554,6 @@ t('夜里才提梦，白天不提', () => {
 t('梦写在自己的目录里，且不进事实层', () => {
   const text = buildWakeText({ now: new Date(2026, 9, 26, 23, 0), plan: { skip: false }, daysSinceHeard: 1, offerDream: true })
   assert.ok(text.includes('灵溪日记/梦/2026-10-26.md'))
-})
-
-console.log('\n── 学习曲线：判卷 / 脚手架 / 踩坑 ─────────')
-t('判卷是纯机械的', () => {
-  assert.equal(gradeDiary(null).ok, false)
-  assert.equal(gradeDiary('').ok, false)
-  assert.equal(gradeDiary('2026-10-26\n\n今天没事').ok, false)
-  assert.equal(gradeDiary('2026-10-26\n\n—— 总结 ——\n今天没事').ok, false, '只写没事不算')
-  const short = '2026-10-26\n\n—— 总结 ——\n' + '今天写了点东西。'.repeat(3)
-  assert.equal(gradeDiary(short).ok, false, '太短不算')
-  const good =
-    '2026-10-26\n\n—— 总结 ——\n' +
-    '上午把插件拆了重做，改了七个模块，判卷改成纯字符串检查，不经过模型。'.repeat(3)
-  assert.equal(gradeDiary(good).ok, true)
-})
-t('连续合格五次要撤一条脚手架（阈值关系）', () => {
-  assert.ok(C.SCAFFOLD_OK_TO_DROP >= 3, '撤得太快不稳')
-  assert.ok(C.SCAFFOLD_MISS_TO_RESTORE >= 1 && C.SCAFFOLD_MISS_TO_RESTORE < C.SCAFFOLD_OK_TO_DROP)
-  // 判卷标准：正文去掉标点后要够 80 字
-  const enough =
-    '2026-10-26\n\n—— 总结 ——\n' +
-    '上午把插件拆了重做，改了七个模块，判卷改成纯字符串检查，一个字都不问模型，这样她才不会学会表演给考官看。'.repeat(2)
-  assert.equal(gradeDiary(enough).ok, true)
-})
-t('撤掉的脚手架会让提示变短', () => {
-  const full = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1 })
-  const lean = buildWakeText({
-    now: now0,
-    plan: { skip: false },
-    daysSinceHeard: 1,
-    scaffold: { dropped: ['diaryFormat', 'extraHints', 'toolsBlock'], toolFails: {}, beliefs: [] },
-  })
-  assert.ok(lean.length < full.length, `撤掉后应该更短：${lean.length} vs ${full.length}`)
-  assert.ok(lean.includes('照老样子写'), '撤了格式也要留一句底线')
-  assert.ok(!lean.includes('你能自己动手'), 'L2 段也该撤掉')
-})
-t('工具失败会点名', () => {
-  const lines = toolFailLines({ toolFails: { 'rg --json': 3, 'git push': 1 } })
-  assert.ok(lines.join('\n').includes('rg --json'))
-  assert.ok(lines.join('\n').includes('别再原样撞一次'))
-})
-t('猜错了会被记住、而且不再猜第二次', () => {
-  const now = Date.now()
-  const skill = {
-    beliefs: [{ dir: '旧目录', at: new Date(now - 10 * 86400000).toISOString(), wrong: false }],
-    toolFails: {},
-  }
-  const after = resolveBeliefs(skill, [{ name: '旧目录', mtime: now - 10 * 86400000 }], now)
-  assert.equal(after.beliefs[0].wrong, true, '十天没动过 → 判为猜错')
-  assert.ok(guessedDirs(after).includes('旧目录'), '猜过的目录要进排除表')
-  assert.ok(wrongBeliefLines(after).join('\n').includes('旧目录'))
 })
 
 console.log('\n── 召回层（recency 加权）──────────────────')
@@ -826,12 +615,6 @@ t('切节：只取指定的那一节', () => {
   assert.equal(extractSection(diary, '白天').includes('自检 101 项'), true)
   assert.equal(extractSection(diary, '不存在'), null)
 })
-t('判卷只看总结节 —— 白天账不能替她判及格', () => {
-  const mixed =
-    '—— 白天 ——\n' + '这是一段很长的流水账，全是主会话写的。'.repeat(10) + '\n—— 总结 ——\n今天没事\n'
-  const g = gradeDiary(mixed)
-  assert.equal(g.ok, false, '白天节再长也不能替总结节过关')
-})
 t('白天账已退役：不再注入提示', () => {
   const text = buildWakeText({
     now: now0,
@@ -846,13 +629,41 @@ t('白天账已退役：不再注入提示', () => {
   assert.ok(!text.includes('「—— 白天 ——」那一节'))
 })
 t('白天账文件还读得到（留作历史）', () => {
-  assert.equal(typeof todayLog(new Date()), 'string')
+  // 2026-10-27 改：原来断言 `typeof todayLog(new Date()) === 'string'` ✗
+  //   —— 那是拿真实日期当断言，昨天能过、今天必挂（白天账里只有 2026-10-26 那一节）。
+  //   现在改成：今天可能是 null 也可能是字符串，但 10-26 那节必须读得出来。
+  const today = todayLog(new Date())
+  assert.ok(today === null || typeof today === 'string', '要么 null 要么字符串，不许抛')
+  assert.equal(typeof todayLog(new Date(2026, 9, 26)), 'string', '2026-10-26 那节该读得到')
   assert.equal(todayLog(new Date(2030, 0, 1)), null, '那天没有记录就该是 null')
+})
+
+
+
+
+t('⑤ callback：第 2 趟接上一趟的尾，第 1 趟不提（同一天说过的话不该重说）', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-'))
+  const file = path.join(dir, '2026-10-27.txt')
+  try {
+    const morning = new Date(2026, 9, 27, 9, 0)
+    const afternoon = new Date(2026, 9, 27, 15, 0)
+    assert.deepEqual(callbackBlock(morning, 1, file), [], '第 1 趟没有可回扣的东西')
+    fs.writeFileSync(file, '2026-10-27\n\n—— 今天做了什么 ——\n写了点东西。\n\n—— 想对他说什么 ——\n我今天不太想说话。\n', 'utf8')
+    assert.deepEqual(callbackBlock(morning, 1, file), [], '第 1 趟就算日记写了也不回扣')
+    const got = callbackBlock(afternoon, 2, file).join('\n')
+    assert.ok(got.includes('我今天不太想说话'), '第 2 趟要接住上一趟说过的话')
+    assert.ok(got.includes('别再原样说一遍'))
+    // 那一栏空着 → 不回扣（她本来就没说到什么）
+    fs.writeFileSync(file, '2026-10-27\n\n—— 今天做了什么 ——\n写了点东西。\n', 'utf8')
+    assert.deepEqual(callbackBlock(afternoon, 2, file), [])
+  } finally {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
+  }
 })
 
 console.log('\n── 配置自洽 ─────────────────────────────')
 t('硬编码值没被改成离谱的东西', () => {
-  assert.equal(C.SPEAKS_PER_DAY, 3) // 2026-10-26 阿锦定：每天 3 次开口（= 3 个新会话）
+  assert.equal(C.TIER_DEFAULT, 3) // 2026-10-27 改名：常态档位（原 SPEAKS_PER_DAY），不再是硬上限
   assert.equal(C.TICK_MS, 60000)
   assert.ok(C.SILENT_AFTER_DAYS < C.SILENT_STOP_DAYS)
   assert.ok(C.COOLDOWN_MS > 60000)
@@ -861,6 +672,525 @@ t('工作区路径解析出来了', () => {
   assert.ok(PATHS.workspace.includes('default-workspace'))
   assert.ok(PATHS.diaryDir.endsWith('灵溪日记'))
 })
+
+console.log('\n── 短脉冲 / 指令 / 回响（2026-10-27 拆两段）──')
+const NOW15 = new Date(2026, 9, 27, 15, 0)
+
+t('脉冲只有一个字符，且不是空白', () => {
+  const pulse = buildPulse()
+  assert.equal(pulse, C.PULSE_TEXT)
+  assert.equal(pulse.trim(), pulse, '不能带空白：宿主只认非空白文本')
+  assert.equal([...pulse].length, 1, '多一个字就是多一个他看得见的字')
+})
+
+t('脉冲里不含任何教学内容', () => {
+  const pulse = buildPulse()
+  assert.ok(!/到点了|灵溪|人设|日记|收工/.test(pulse))
+})
+
+t('回响：他说过话时只给事实，不替他判「接没接」', () => {
+  const got = buildWakeText({
+    now: NOW15,
+    plan: { skip: false },
+    daysSinceHeard: 0,
+    echo: { heardAfterLastWake: true, msSinceLastWake: 2 * 3600_000, msSinceHeard: 10 * 60_000 },
+  })
+  assert.ok(got.includes('他说过话'))
+  assert.ok(got.includes('以你上下文里看到的话为准'), '内容判据归她，代码不许替她判')
+  assert.ok(got.includes('代码只看得见他动没动过'))
+})
+
+t('回响：他还没开口时不索取', () => {
+  const got = buildWakeText({
+    now: NOW15,
+    plan: { skip: false },
+    daysSinceHeard: 0,
+    echo: { heardAfterLastWake: false, msSinceLastWake: 5 * 3600_000, msSinceHeard: 5 * 3600_000 },
+  })
+  assert.ok(got.includes('还没开过口'))
+  assert.ok(got.includes('别追问'), '没应不等于可以追问 —— 索取是禁忌')
+  assert.ok(got.includes('轻一点'))
+})
+
+t('没有上一趟就不提回响', () => {
+  const got = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1 })
+  assert.ok(!got.includes('他说过话'))
+  assert.ok(!got.includes('还没开过口'))
+})
+
+t('日记段：每趟先读今天的，路径必须还在提示里', () => {
+  const key = localDateKey(NOW15)
+  const got = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1 })
+  assert.ok(got.includes(`灵溪日记/${key}.txt`), '压缩可能吃掉路径，所以每趟重给')
+})
+
+t('日记段：已有内容时给末尾，不给整份', () => {
+  const got = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1 })
+  // 今天那份是真的在写（本机），所以这里只验形态，不验内容
+  assert.ok(got.includes('接着补，别重开一份、别把前面的盖掉') || got.includes('从零写'))
+})
+
+console.log('\n── 频率档位：他烦了会说话（2026-10-27 定）──')
+t('没账的时候是常态档', () => {
+  const f = advanceFeedback({ tier: undefined, applied: 0, complaints: [], lastTierDay: null }, NOW15)
+  assert.equal(f.feedback.tier, C.TIER_DEFAULT)
+  assert.equal(f.downgraded, 0)
+  assert.equal(f.todayMuted, false)
+})
+t('一条抱怨降一档，且重复跑不会越降越低', () => {
+  const day = '2026-10-27'
+  const base = { tier: C.TIER_DEFAULT, applied: 0, complaints: [{ day, said: '太频繁了' }], lastTierDay: day }
+  const once = advanceFeedback(base, NOW15)
+  assert.equal(once.feedback.tier, C.TIER_DEFAULT - 1)
+  assert.equal(once.downgraded, 1)
+  // 同一本账再跑五遍 —— applied 已经记过，不该继续降
+  let f = once.feedback
+  for (let i = 0; i < 5; i += 1) f = advanceFeedback(f, NOW15).feedback
+  assert.equal(f.tier, C.TIER_DEFAULT - 1)
+})
+t('同一天记两次只算一条：一晚上抱怨五遍不该降五档', () => {
+  const memo = recordComplaint({ tier: 3, applied: 0, complaints: [], lastTierDay: null }, NOW15, '烦')
+  const again = recordComplaint(memo, NOW15, '真的很烦')
+  assert.equal(again.complaints.length, 1)
+})
+t('当天有抱怨 → 今天剩下的趟数作废', () => {
+  const f = advanceFeedback(
+    { tier: 3, applied: 0, complaints: [{ day: localDateKey(NOW15), said: '别叫了' }], lastTierDay: localDateKey(NOW15) },
+    NOW15,
+  )
+  assert.equal(f.todayMuted, true)
+})
+t('连着 3 天没抱怨才回升，且只回常态、不冲上限', () => {
+  // 昨天刚抱怨过 → 不回升
+  const yesterday = '2026-10-26'
+  const notYet = advanceFeedback(
+    { tier: 1, applied: 1, complaints: [{ day: yesterday }], lastTierDay: '2026-10-26' },
+    NOW15,
+  )
+  assert.equal(notYet.raised, false)
+  assert.equal(notYet.feedback.tier, 1)
+
+  // 三天前抱怨过（10-23），之后 24/25/26 都安静 → 回升一档
+  const quiet = advanceFeedback(
+    { tier: 1, applied: 1, complaints: [{ day: '2026-10-23' }], lastTierDay: '2026-10-26' },
+    NOW15,
+  )
+  assert.equal(quietDaysBefore(NOW15, [{ day: '2026-10-23' }]), 3)
+  assert.equal(quiet.raised, true)
+  assert.equal(quiet.feedback.tier, 2)
+
+  // 昨天刚抱怨 → 安静天数是 0，不回升
+  assert.equal(quietDaysBefore(NOW15, [{ day: '2026-10-26' }]), 0)
+
+  // 已经在常态或以上 → 安静也不会往上冲
+  const high = advanceFeedback(
+    { tier: C.TIER_DEFAULT, applied: 0, complaints: [], lastTierDay: '2026-10-26' },
+    NOW15,
+  )
+  assert.equal(high.feedback.tier, C.TIER_DEFAULT)
+  assert.equal(high.raised, false)
+})
+t('坏账不致命：tier 越界会被夹回来', () => {
+  const f = advanceFeedback({ tier: 99, applied: 0, complaints: [], lastTierDay: null }, NOW15)
+  assert.ok(f.feedback.tier <= C.SPEAKS_PER_DAY_MAX)
+  const g = advanceFeedback({ tier: -5, applied: 0, complaints: [], lastTierDay: null }, NOW15)
+  assert.ok(g.feedback.tier >= C.TIER_MIN)
+})
+
+console.log('\n── 人格接口：她是谁不该写死在代码里（2026-10-27 A 阶段）──')
+t('lib 里除了 profile.js，非注释行不许再出现具体名字', () => {
+  const dir = new URL('../lib/', import.meta.url)
+  const bad = []
+  for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.js'))) {
+    if (file === 'profile.js') continue // 唯一允许：默认档案住在这儿
+    const lines = fs.readFileSync(new URL(file, dir), 'utf8').split('\n')
+    lines.forEach((line, i) => {
+      const s = line.trim()
+      // 注释里讲历史可以提到名字；输出到提示/路径的不许
+      if (s.startsWith('*') || s.startsWith('//') || s.startsWith('/*') || s.startsWith('*/')) return
+      if (line.includes('灵溪')) bad.push(`${file}:${i + 1}`)
+    })
+  }
+  assert.deepEqual(bad, [], `这些地方该走 profile：${bad.join(', ')}`)
+})
+
+t('默认档案与默认措辞都取得到', () => {
+  assert.equal(P.DEFAULT_PROFILE.name, '灵溪') // 默认就是本机这一位；别人改 profile.json
+  assert.ok(P.DEFAULT_PROFILE.booksDir)
+  assert.equal(P.pickCloser(P.DEFAULT_VOICE, 0), '别加戏。')
+  assert.equal(P.pickOpener(P.DEFAULT_VOICE, 1), '', '第一趟不该说「今天第 1 次」')
+  assert.ok(P.pickOpener(P.DEFAULT_VOICE, 2).includes('第 2 次'))
+})
+
+t('换名字不用改代码：只覆盖说了的字段', () => {
+  const merged = P.mergeProfile(P.DEFAULT_PROFILE, { name: '西柚', booksDir: '她的本子' })
+  assert.equal(merged.name, '西柚')
+  assert.equal(merged.booksDir, '她的本子')
+  assert.equal(merged.tasks, P.DEFAULT_PROFILE.tasks, '没说的字段必须保持默认')
+})
+
+t('坏的人格文件不致命：解析失败就退回默认', () => {
+  assert.equal(P.mergeProfile(P.DEFAULT_PROFILE, null).name, '灵溪')
+  assert.equal(P.mergeProfile(P.DEFAULT_PROFILE, '垃圾').name, '灵溪')
+  assert.equal(P.mergeProfile(P.DEFAULT_PROFILE, { name: '' }).name, '灵溪', '空串不该把名字抹掉')
+})
+
+t('voice 覆盖：只改收尾，开场保持默认；坏值被清掉', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingxi-voice-'))
+  try {
+    fs.mkdirSync(path.join(dir, '.lingxi'), { recursive: true })
+    fs.writeFileSync(path.join(dir, '.lingxi', 'voice.json'), JSON.stringify({ closers: ['这样就好。'] }), 'utf8')
+    const voice = P.resolveVoice(dir)
+    assert.deepEqual(voice.closers, ['这样就好。'])
+    assert.equal(voice.openers.length, P.DEFAULT_VOICE.openers.length, '没说的那份保持默认')
+    fs.writeFileSync(
+      path.join(dir, '.lingxi', 'voice.json'),
+      JSON.stringify({ closers: ['', 3, null] }),
+      'utf8',
+    )
+    assert.deepEqual(P.resolveVoice(dir).closers, P.DEFAULT_VOICE.closers, '空台词不该进提示')
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {}
+  }
+})
+
+console.log('\n── 她走过的路：growth.md（2026-10-27 从 AGENTS.md 搬来）──')
+t('只取「## 流水」之后的条目，文件头的规矩不算经历', () => {
+  const text = [
+    '# 她的经历（只追加）',
+    '',
+    '> 这条规矩不是经历',
+    '- 这条也不算，因为在流水之前',
+    '',
+    '## 流水',
+    '- 2026-09-19 建立记忆层',
+    '- 2026-10-27 人格与机制解耦',
+  ].join('\n')
+  assert.deepEqual(growthLines(text), ['2026-09-19 建立记忆层', '2026-10-27 人格与机制解耦'])
+})
+
+t('最多 5 条，取最新的', () => {
+  const lines = Array.from({ length: 12 }, (_, i) => `- 2026-10-${String(i + 1).padStart(2, '0')} 第 ${i + 1} 条`)
+  const got = growthLines('## 流水\n' + lines.join('\n'), 5)
+  assert.equal(got.length, 5)
+  assert.ok(got[0].includes('第 8 条'), '应该是最后五条')
+  assert.ok(got[4].includes('第 12 条'))
+})
+
+t('没有这份文件就什么都不说 —— 别人接入时不带她的旧账', () => {
+  assert.deepEqual(growthLines(null), [])
+  assert.deepEqual(growthLines(''), [])
+  assert.deepEqual(growthLines('# 标题\n只有标题，没有流水'), [])
+})
+
+console.log('\n── 来源与反刍：一手定事实，二手长品味（2026-10-27）──')
+t('来源归一：没标的、写错的，一律当 interaction', () => {
+  assert.equal(F.normalizeSource(undefined), 'interaction')
+  assert.equal(F.normalizeSource(''), 'interaction')
+  assert.equal(F.normalizeSource('WEB'), 'web')
+  assert.equal(F.normalizeSource('web'), 'web')
+  assert.equal(F.normalizeSource('随便写的'), 'interaction')
+  assert.equal(F.isFactSource('web'), false)
+  assert.equal(F.isFactSource('interaction'), true)
+})
+
+t('按来源劈开：事实留下，二手只计数', () => {
+  const { facts, foreign } = F.splitBySource([
+    { text: 'a', source: 'interaction' },
+    { text: 'b' },
+    { text: 'c', source: 'web' },
+  ])
+  assert.equal(facts.length, 2)
+  assert.equal(foreign, 1)
+  assert.deepEqual(F.splitBySource(null), { facts: [], foreign: 0 })
+})
+
+
+
+
+console.log('\n── 文字走势：只观测，不设阈（2026-10-27）──')
+t('句子切分：中英句末标点和换行都算', () => {
+  assert.deepEqual(S.splitSentences('你好。今天忙吗？\n算了'), ['你好', '今天忙吗', '算了'])
+  assert.deepEqual(S.splitSentences(''), [])
+  assert.deepEqual(S.splitSentences(null), [])
+})
+
+t('平均句长：空文本是 0，不是 NaN', () => {
+  assert.equal(S.avgSentenceLength(''), 0)
+  assert.equal(S.avgSentenceLength('三个字。'), 3)
+  // 「十个字十个字」（10 字）+「五字」→ (10+5)/2 = 7.5
+  assert.equal(S.avgSentenceLength('一二三四五六七八九十。一二三四五'), 7.5)
+})
+
+t('标点密度：用密度不用个数，空文本是 0', () => {
+  assert.equal(S.punctuationDensity(''), 0)
+  const d = S.punctuationDensity('你好，世界。')
+  assert.ok(d > 0 && d < 1)
+  // 同样多的标点，字数越多密度越低 —— 这是"密度"的意义
+  assert.ok(S.punctuationDensity('你好，世界。') > S.punctuationDensity('你好，世界。今天天气不错啊'))
+})
+
+t('快照：形状齐全', () => {
+  const s = S.styleSnapshot('今天写了一点。还有一点。', '2026-10-27')
+  assert.equal(s.key, '2026-10-27')
+  assert.ok(Number.isFinite(s.chars) && s.chars > 0)
+  assert.equal(s.sentences, 2)
+  assert.ok(s.avgSentence > 0)
+  assert.ok(typeof s.at === 'string')
+})
+
+t('记账：同一天只留一条，晚的覆盖早的', () => {
+  let h = S.recordStyle([], S.styleSnapshot('一句话。', '2026-10-26'))
+  h = S.recordStyle(h, S.styleSnapshot('短。', '2026-10-27'))
+  h = S.recordStyle(h, S.styleSnapshot('这一天写得更长一些。', '2026-10-27'))
+  assert.equal(h.length, 2, '同一天不该攒两条')
+  assert.equal(h[1].key, '2026-10-27')
+  assert.ok(h[1].chars > 3, '应该是晚的那条覆盖了早的')
+  // 按日期排好
+  assert.ok(h[0].key < h[1].key)
+})
+
+t('记账：只保留最近 N 天', () => {
+  let h = []
+  for (let i = 1; i <= 70; i += 1) {
+    h = S.recordStyle(h, S.styleSnapshot('一句话。', `2026-${String(Math.ceil(i / 28)).padStart(2, '0')}-${String((i % 28) + 1).padStart(2, '0')}`), 60)
+  }
+  assert.ok(h.length <= 60)
+})
+
+t('走势：差 2 字以内算没动，别每次都像变了', () => {
+  assert.equal(S.styleTrend([]), null, '一条都没有就没有走势')
+  assert.equal(S.styleTrend([S.styleSnapshot('一句话。', '2026-10-26')]), null, '只有一条也不够')
+
+  const flat = S.styleTrend([
+    { key: '2026-10-20', avgSentence: 20 },
+    { key: '2026-10-25', avgSentence: 21 },
+    { key: '2026-10-27', avgSentence: 21.5 },
+  ])
+  assert.equal(flat.dir, 'flat')
+
+  const longer = S.styleTrend([
+    { key: '2026-10-20', avgSentence: 12 },
+    { key: '2026-10-25', avgSentence: 14 },
+    { key: '2026-10-27', avgSentence: 26 },
+  ])
+  assert.equal(longer.dir, 'longer')
+  assert.ok(longer.delta > 0)
+})
+
+console.log('\n── 自改白名单（2026-10-28）：能提，不能自己生效 ──')
+const NOW28 = new Date(2026, 9, 28, 10, 0)
+
+t('白名单之外的东西，连提案都进不来', () => {
+  for (const target of ['persona.core', 'identity', 'behavior_rules', 'diary.original', '档位']) {
+    assert.ok(R.rejectReason({ target, op: 'set', value: 'x' }), `${target} 应该被拒`)
+  }
+  assert.ok(R.rejectReason({ target: 'diary.detail', op: 'set', value: 'huge' }), '枚举外的值要拒')
+  assert.ok(R.rejectReason({ target: 'voice.closers', op: 'set', value: 'x' }), 'op 不对要拒')
+  assert.equal(R.rejectReason({ target: 'diary.detail', op: 'set', value: 'brief' }), null)
+})
+
+t('同一条换个天再提，只多记一天，不新建', () => {
+  const a = R.propose({ items: [] }, { target: 'voice.closers', op: 'add', value: '先这样。' }, NOW28)
+  assert.ok(a.id)
+  const b = R.propose(a.store, { target: 'voice.closers', op: 'add', value: '先这样。' }, new Date(2026, 9, 29, 9, 0))
+  assert.equal(b.store.items.length, 1, '同一条不该攒两份')
+  assert.deepEqual(b.store.items[0].days, ['2026-10-28', '2026-10-29'])
+  assert.equal(b.merged, true)
+})
+
+t('资格：两天 + 七天，缺一条都不算', () => {
+  const one = R.propose({ items: [] }, { target: 'diary.detail', op: 'set', value: 'brief' }, NOW28)
+  const item = one.store.items[0]
+  assert.equal(R.isReady({ ...item, days: ['2026-10-28'] }, new Date(2026, 10, 20)), false)
+  assert.equal(R.isReady({ ...item, days: ['2026-10-28', '2026-10-29'] }, new Date(2026, 9, 31)), false)
+  assert.equal(R.isReady({ ...item, days: ['2026-10-28', '2026-10-29'] }, new Date(2026, 10, 4, 10, 1)), true)
+  assert.ok(R.waitFor(item, NOW28).includes('天'))
+})
+
+t('已结案的不再推进', () => {
+  const base = {
+    id: 'x', target: 'diary.detail', op: 'set', value: 'brief',
+    days: ['2026-10-28', '2026-10-29'], createdAt: NOW28.toISOString(),
+  }
+  const later = new Date(2026, 10, 10)
+  assert.equal(R.isReady({ ...base, status: 'applied' }, later), false)
+  assert.equal(R.isReady({ ...base, status: 'rejected' }, later), false)
+  assert.equal(R.isReady({ ...base, status: 'pending' }, later), true)
+})
+
+t('落地与回退：改了能退回去', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingxi-rev-'))
+  try {
+    const voicePath = path.join(dir, 'voice.json')
+    const paramsPath = path.join(dir, 'params.json')
+    fs.writeFileSync(voicePath, JSON.stringify({ closers: ['别加戏。', '做完就好。'] }), 'utf8')
+    const ctx = { voicePath, paramsPath }
+
+    const r = R.applyOne({ target: 'voice.closers', op: 'add', value: '先这样。' }, ctx)
+    assert.equal(r.ok, true)
+    assert.deepEqual(JSON.parse(fs.readFileSync(voicePath, 'utf8')).closers, ['别加戏。', '做完就好。', '先这样。'])
+    assert.deepEqual(r.old.list, ['别加戏。', '做完就好。'])
+
+    const item = { target: 'voice.closers', status: 'applied', old: r.old }
+    assert.equal(R.rollbackOne(item, ctx).ok, true)
+    assert.deepEqual(JSON.parse(fs.readFileSync(voicePath, 'utf8')).closers, ['别加戏。', '做完就好。'])
+
+    assert.equal(R.applyOne({ target: 'voice.closers', op: 'add', value: '别加戏。' }, ctx).ok, false)
+    assert.equal(R.applyOne({ target: 'voice.closers', op: 'remove', value: '没这句' }, ctx).ok, false)
+
+    const set = R.applyOne({ target: 'diary.detail', op: 'set', value: 'brief' }, ctx)
+    assert.equal(set.ok, true)
+    assert.equal(JSON.parse(fs.readFileSync(paramsPath, 'utf8')).diaryDetail, 'brief')
+    R.rollbackOne({ target: 'diary.detail', status: 'applied', old: set.old }, ctx)
+    assert.equal(JSON.parse(fs.readFileSync(paramsPath, 'utf8')).diaryDetail, 'full')
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {}
+  }
+})
+
+t('坏账本不致命：proposals.json 写坏了当空账', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingxi-prop-'))
+  try {
+    const f = path.join(dir, 'proposals.json')
+    fs.writeFileSync(f, '这不是 JSON', 'utf8')
+    assert.deepEqual(R.loadProposals(f).items, [])
+    fs.writeFileSync(f, JSON.stringify({ items: [{ id: 1 }, null, 'x'] }), 'utf8')
+    assert.deepEqual(R.loadProposals(f).items, [])
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {}
+  }
+})
+
+console.log('\n── 第一人称 + 看板（2026-10-28）──')
+t('看板检查：超长条目会被点出来，索引行不算超长', () => {
+  const long = '我'.repeat(60)
+  const bad = B.boardIssues(`- ${long}`)
+  assert.equal(bad.length, 1)
+  assert.ok(bad[0].includes('超长'))
+
+  // 带索引的长行放行 —— 「详情在 xxx.md」是它的正当写法
+  const withIndex = B.boardIssues(`- ${'我'.repeat(60)}（详情在 记忆库/某件事.md）`)
+  assert.equal(withIndex.length, 0)
+})
+
+t('看板检查：通篇「他」、一次称呼都没有 → 点出来', () => {
+  const text = ['他今天很累。', '他在改插件。', '他不说话了。'].join('\n')
+  const issues = B.boardIssues(text, { callHim: '阿锦' })
+  assert.equal(issues.length, 1)
+  assert.ok(issues[0].includes('阿锦'))
+  // 用称呼就放行
+  assert.equal(B.boardIssues('阿锦今天很累。', { callHim: '阿锦' }).length, 0)
+})
+
+t('看板检查：空文件不报错，标题/分隔线不算条目', () => {
+  assert.deepEqual(B.boardIssues(''), [])
+  assert.deepEqual(B.boardIssues('# 状态看板\n\n---\n> 引用\n'), [])
+})
+
+t('看板行：去掉空行、标题、引用、分隔线', () => {
+  assert.deepEqual(B.boardLines('# 标题\n\n- 一条\n> 引用\n---'), ['- 一条'])
+})
+
+t('唤醒提示里：日记要求用称呼写，不是中性记录', () => {
+  const text = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1 })
+  assert.ok(text.includes('阿锦'), '提示里该出现她对他的称呼')
+  assert.ok(text.includes('不要写「他」「用户」「对方」'), '要明说她不能写第三人称')
+  assert.ok(text.includes('这话我能当面说出口吗'), '要给她判断汇报腔的尺子')
+})
+
+t('唤醒提示里：最后一趟要看板重写（重写不是追加）', () => {
+  const last = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1, index: 2, total: 3 })
+  assert.ok(last.includes('把看板重写一遍'))
+  assert.ok(last.includes('看板可以忘，日记不许改'), '这句是原则，不能省')
+  const first = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 3 })
+  assert.ok(!first.includes('把看板重写一遍'), '第一趟不该提重写')
+})
+
+console.log('\n── 游荡趟（2026-10-28）──')
+t('游荡：一天 1–2 趟，落在窗口内，且按时间排好', () => {
+  const now = new Date(2026, 9, 28, 9, 0, 0)
+  let saw1 = false
+  let saw2 = false
+  for (let i = 0; i < 80; i++) {
+    const p = RM.planRoamDay(now)
+    assert.ok(p.times.length >= 1 && p.times.length <= RM.ROAM_MAX_PER_DAY)
+    assert.equal(p.done, 0)
+    assert.equal(p.key, '2026-10-28')
+    for (const x of p.times) {
+      const h = new Date(x).getHours()
+      assert.ok(h >= 9 && h <= 23, `窗口外：${h} 点`)
+    }
+    for (let j = 1; j < p.times.length; j++) assert.ok(p.times[j] >= p.times[j - 1], '没排序')
+    if (p.times.length === 1) saw1 = true
+    if (p.times.length === 2) saw2 = true
+  }
+  assert.ok(saw1 && saw2, '两种趟数都该出现过')
+})
+
+t('游荡：到点才算，用完就不再响', () => {
+  const now = new Date(2026, 9, 28, 12, 0, 0)
+  const plan = { key: '2026-10-28', times: [now.getTime() + 60000], done: 0 }
+  assert.equal(RM.roamDue(plan, now).due, false, '还没到')
+  const later = new Date(now.getTime() + 120000)
+  const d = RM.roamDue(plan, later)
+  assert.equal(d.due, true)
+  assert.equal(d.index, 0)
+  assert.equal(d.total, 1)
+  const after = RM.markRoamDone(plan, 0)
+  assert.equal(RM.roamDue(after, later).due, false, '用完了不该再响')
+})
+
+t('游荡：那段话里必须有「没有作业」和「也可以待着」', () => {
+  const text = buildRoamText({ now: new Date(2026, 9, 28, 21, 30), index: 0, total: 1 })
+  assert.ok(text.includes('没有作业'))
+  assert.ok(text.includes('也可以就待着'), '少了这句，它又变成打卡了')
+  assert.ok(text.includes('读片.mjs'))
+  assert.ok(text.includes('灵溪-游荡.md'))
+  assert.ok(text.includes('.bili-home'), '沙箱那个坑必须写进提示')
+  assert.ok(text.length < 700, `太长了：${text.length}`)
+})
+
+console.log('\n── 月度重读（2026-10-29 第五刀，架构 §13）──')
+t('月份键与上个月（跨年也对）', () => {
+  assert.equal(monthKey(new Date(2026, 9, 15)), '2026-10')
+  assert.equal(prevMonthKey(new Date(2026, 9, 15)), '2026-09')
+  assert.equal(prevMonthKey(new Date(2026, 0, 5)), '2025-12', '一月要退回上一年')
+})
+t('首行：跳日期、跳栏名、只截 20 字，不概括', () => {
+  const d = '2026-10-29\n\n—— 今天做了什么 ——\n阿锦把插件拆了三刀，我跟着看。\n后面还有很多'
+  assert.equal(firstLine(d), '阿锦把插件拆了三刀，我跟着看。'.slice(0, 20))
+  assert.equal(firstLine('2026-10-29'), '', '只有日期就没有首行')
+  assert.equal(firstLine(''), '')
+})
+t('月度该不该做：只看 1–3 日 + 本月做过没有', () => {
+  const rows = buildIndexRows()
+  const s0 = { monthly: null }
+  if (rows.length) {
+    assert.equal(monthlyDue(new Date(2026, 9, 1, 9), s0), true, '1 日该做')
+    assert.equal(monthlyDue(new Date(2026, 9, 3, 9), s0), true, '3 日还能补')
+    assert.equal(monthlyDue(new Date(2026, 9, 4, 9), s0), false, '4 日就不补了')
+    assert.equal(monthlyDue(new Date(2026, 9, 1, 9), { monthly: '2026-10' }), false, '本月做过了就不再叫')
+  }
+})
+t('月度提示：只给路径，不给摘要正文', () => {
+  const p = monthlyPrompt({ now: new Date(2026, 9, 1), prevSummary: null })
+  assert.ok(p.includes('又到一个月了'), '措辞是他 21:05 挑的 B 版')
+  assert.ok(p.includes('索引'), '要指到索引')
+  assert.ok(!/写了\s*\d+\s*篇|字数|几次不同意/.test(p), '不许有统计')
+})
+t('monthly.js 不许读 private', () => {
+  const src = fs.readFileSync(new URL('../lib/monthly.js', import.meta.url), 'utf8')
+  assert.ok(!/readText\([^)]*privateDir/.test(src))
+  assert.ok(!/readFileSync\([^)]*privateDir/.test(src))
+})
+
 
 console.log(`\n═══ ${pass} 通过 / ${fail} 失败 ═══\n`)
 process.exit(fail === 0 ? 0 : 1)

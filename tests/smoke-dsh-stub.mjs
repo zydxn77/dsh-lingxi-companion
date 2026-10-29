@@ -35,7 +35,7 @@ process.env.DSH_HOME = DSH
 const { PATHS, localDateKey, writeState, readState, readJson } = await import('../lib/home.js')
 const { apply } = await import('../lib/index.js')
 const { findMainSession } = await import('../lib/spine.js')
-const { MAX_FAILS_PER_SLOT } = await import('../lib/const.js')
+const { MAX_FAILS_PER_SLOT, PULSE_TEXT, SCAFFOLD_SOURCE_KIND } = await import('../lib/const.js')
 
 const problems = []
 const check = (cond, msg) => {
@@ -59,7 +59,7 @@ function makeSession({ id, depth = 0, dirName = null, ageMs = 0 }) {
 }
 
 function makeCtx(overrides = {}) {
-  const rec = { created: [], renamed: [], sent: [], cleanups: [] }
+  const rec = { created: [], renamed: [], sent: [], cleanups: [], listeners: {} }
   const ctx = {
     sessionController: {
       async create(arg) {
@@ -79,6 +79,16 @@ function makeCtx(overrides = {}) {
     effect(fn) {
       rec.cleanups.push(fn())
     },
+    ...(overrides.__bus === true
+      ? {
+          on(event, fn) {
+            rec.listeners[event] = fn
+            return () => {
+              delete rec.listeners[event]
+            }
+          },
+        }
+      : {}),
     ...overrides,
   }
   return { ctx, rec }
@@ -170,6 +180,59 @@ console.log('\n── A 正常一趟 ──')
   stopAll(rec)
 }
 
+/* ───────── A2 脉冲 + 指令：他不该看见正文 ───────── */
+console.log('\n── A2 脉冲 + 指令 ──')
+{
+  ageAll()
+  writeState({ plan: seedPlan() })
+  const { ctx, rec } = makeCtx({ __bus: true })
+  apply(ctx, {})
+  await settle()
+
+  check(rec.sent.length === 1, `A2 应该说 1 次话，实际 ${rec.sent.length}`)
+  const r = rec.sent[0]
+  if (r) {
+    const pulse = r.content?.[0]?.text
+    check(pulse === PULSE_TEXT, `A2 投的应是脉冲「${PULSE_TEXT}」，实际 ${JSON.stringify(pulse)}`)
+  }
+
+  const listener = rec.listeners['agent/pre-step']
+  check(typeof listener === 'function', 'A2 应挂上 agent/pre-step')
+
+  if (typeof listener === 'function' && r) {
+    const pulseMsg = {
+      role: 'user',
+      content: [{ type: 'text', text: PULSE_TEXT }],
+      source: { kind: 'user', rpcId: r.requestId },
+    }
+    // 别人的指令消息（比如 grill-me）不能被她吞掉
+    const foreign = {
+      role: 'user',
+      content: [{ type: 'text', text: 'x' }],
+      source: { kind: 'grill-me', form: 'directive' },
+    }
+    const out = await listener({ agent: {} }, async () => ({
+      kind: 'enter',
+      messages: [pulseMsg, foreign],
+    }))
+    const injected = (out?.messages ?? []).filter((m) => m?.source?.kind === SCAFFOLD_SOURCE_KIND)
+    check(injected.length === 1, `A2 应挂 1 条指令，实际 ${injected.length}`)
+    const body = injected[0]?.content?.[0]?.text ?? ''
+    check(body.includes('【到点了】'), 'A2 指令里应带「到点了」')
+    check(body.includes('灵溪日记/'), 'A2 指令里应带今天的日记路径')
+    check(/灵溪/.test(body) || /你是/.test(body), 'A2 指令第一行应是人设')
+    check((out?.messages ?? []).includes(pulseMsg), 'A2 脉冲不能被吞掉')
+    check((out?.messages ?? []).includes(foreign), 'A2 不该吞掉别人的指令消息')
+    check(body.includes('接着补') || body.includes('从零写'), 'A2 应带上日记现在写到哪了')
+
+    // 消费一次之后不该再挂（指令不算消息、不走幂等键，重投就会挂两份）
+    const again = await listener({ agent: {} }, async () => ({ kind: 'enter', messages: [pulseMsg] }))
+    const second = (again?.messages ?? []).filter((m) => m?.source?.kind === SCAFFOLD_SOURCE_KIND)
+    check(second.length === 0, `A2 指令只该挂一次，第二次又挂了 ${second.length} 条`)
+  }
+  stopAll(rec)
+}
+
 /* ─────────────── B 他正在用，别打断 ─────────────── */
 console.log('\n── B 他正在用 ──')
 {
@@ -225,13 +288,14 @@ console.log('\n── C2 连续失败到上限就熔断 ──')
   stopAll(rec)
 }
 
-/* ─────────── D 心情落盘 ─────────── */
-console.log('\n── D 心情落盘 ──')
+/* ─────────── D 心情层已拆除 ─────────── */
+console.log('\n── D 心情层已拆除 ──')
 {
+  // 2026-10-29 按架构 §4 拆除：原来这里查 mood.json 里的 affinity / baseEnergy。
+  //   现在反过来查 —— 跑完全部场景后，**不该再产出这个文件**（回归保险）。
   const mood = readJson(PATHS.moodFile)
-  check(mood && typeof mood.affinity === 'number', 'D mood.json 应该写出来')
-  check(typeof mood?.baseEnergy === 'number', 'D energy 应该是数')
-  console.log('  心情 :', JSON.stringify(mood))
+  check(mood === null, `D 不该再写 mood.json，实际 ${JSON.stringify(mood)}`)
+  console.log('  心情文件 :', mood === null ? '不存在（符合预期）' : '存在了，有问题')
 }
 
 console.log('\n' + '─'.repeat(52))

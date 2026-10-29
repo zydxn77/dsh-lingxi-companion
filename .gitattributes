@@ -1,0 +1,4 @@
+# 统一换行符 —— 否则 Windows 上 clone 下来会动全库，别人的 diff 全是噪音
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.svg text

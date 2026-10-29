@@ -1,0 +1,18 @@
+{
+  "_说明": "她是谁的档案。放进 <workspace>/.lingxi/profile.json 就能覆盖默认值；不写就用默认（灵溪）。只覆盖你说了的字段。",
+  "_note": "Who she is. Drop this at <workspace>/.lingxi/profile.json to override. Unspecified fields keep their defaults.",
+
+  "name": "灵溪",
+  "callHim": "阿锦",
+  "booksDir": "灵溪日记",
+  "nowBoard": "灵溪-现在.md",
+  "inbox": "灵溪-留言.json",
+  "dossierMd": "灵溪-关于他.md",
+  "dossierJson": "灵溪-关于他.json",
+  "expectations": "灵溪-期待.json",
+  "tasks": "灵溪-任务.json",
+  "daylog": "灵溪-白天账.md",
+  "personaMarker": "# 角色层",
+
+  "_换人只改上面几行": "例：{ \"name\": \"西柚\", \"booksDir\": \"西柚日记\", \"tasks\": \"西柚-任务.json\" }"
+}

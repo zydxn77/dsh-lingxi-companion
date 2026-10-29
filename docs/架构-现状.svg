@@ -1,0 +1,185 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="1240" viewBox="0 0 1180 1240" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#5b6472"/>
+    </marker>
+    <marker id="arrowDash" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#b06a2c"/>
+    </marker>
+    <style>
+      .t  { font-size: 15px; fill: #1f2937; }
+      .tt { font-size: 19px; font-weight: 600; fill: #111827; }
+      .s  { font-size: 12.5px; fill: #4b5563; }
+      .m  { font-size: 12px; fill: #6b7280; }
+      .box { rx: 10; ry: 10; stroke-width: 1.4; }
+      .host { fill: #f3f4f6; stroke: #9ca3af; }
+      .time { fill: #eef4fd; stroke: #7aa2d6; }
+      .dec  { fill: #fdeeee; stroke: #d98b8b; }
+      .mem  { fill: #edf7ef; stroke: #7fb389; }
+      .warn { fill: #fdf5e6; stroke: #d9a94b; }
+      .inner{ fill: #ffffff; stroke: #b9c6d8; }
+      .ok   { fill: #1f7a3f; }
+      .no   { fill: #a33a3a; }
+    </style>
+  </defs>
+
+  <text x="40" y="44" class="tt" font-size="23">dsh-lingxi-companion · 现状架构（2026-10-27 23:20）</text>
+  <text x="40" y="70" class="m">按代码真实行为画的，不是按设计意图。标 ✅ = 已上线，⏳ = 预留未实现。</text>
+
+  <!-- 1 宿主 -->
+  <rect class="box host" x="40" y="90" width="700" height="66"/>
+  <text x="60" y="118" class="t">宿主层 · AGENTS.md（人格真相源）</text>
+  <text x="60" y="140" class="s">身份 / 性格 / 说话风格 / 行为准则 / 示例 + 固定事实 / 边界 —— 每个会话注入一次，插件不再复制</text>
+
+  <line x1="390" y1="156" x2="390" y2="196" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="402" y="182" class="m">宿主已注入 → personaOwner()='host' → 插件一个字都不放</text>
+
+  <!-- 2 造时层 -->
+  <rect class="box time" x="40" y="200" width="700" height="212"/>
+  <text x="60" y="228" class="t">造时层 · 插件 tick（每 60 秒醒一次）</text>
+  <text x="60" y="249" class="m">它只决定「什么时候叫、以什么心情叫、带着什么素材叫」—— 不决定她做什么</text>
+
+  <rect class="box inner" x="60" y="262" width="158" height="132"/>
+  <text x="74" y="284" class="t" font-size="14">clock.js</text>
+  <text x="74" y="306" class="s">作息窗口抽签</text>
+  <text x="74" y="325" class="s">在场直方图加权</text>
+  <text x="74" y="344" class="s">窗口漂移</text>
+  <text x="74" y="363" class="s">懒日 30%</text>
+  <text x="74" y="382" class="m">让路 / 熔断</text>
+
+  <rect class="box inner" x="232" y="262" width="158" height="132"/>
+  <text x="246" y="284" class="t" font-size="14">feedback.js</text>
+  <text x="246" y="306" class="s">档位：常态 3</text>
+  <text x="246" y="325" class="s">他抱怨 → 降一档</text>
+  <text x="246" y="344" class="s">3 天没抱怨 → 回</text>
+  <text x="246" y="363" class="m">当天抱怨 → 当天 0</text>
+  <text x="246" y="382" class="m">✅ 已上线</text>
+
+  <rect class="box inner" x="404" y="262" width="158" height="132"/>
+  <text x="418" y="284" class="t" font-size="14">mood.js</text>
+  <text x="418" y="306" class="s">affinity 只升不降</text>
+  <text x="418" y="325" class="s">energy 按天滚</text>
+  <text x="418" y="344" class="s">freshness→行为分支</text>
+  <text x="418" y="363" class="m">数值不进提示</text>
+  <text x="418" y="382" class="m">✅ 已上线</text>
+
+  <rect class="box inner" x="576" y="262" width="146" height="132"/>
+  <text x="590" y="284" class="t" font-size="14">拼装素材</text>
+  <text x="590" y="306" class="s">日记现值（每趟读）</text>
+  <text x="590" y="325" class="s">回响 · 期待 · 任务</text>
+  <text x="590" y="344" class="s">经历 5 条 · 反刍</text>
+  <text x="590" y="363" class="s">余额 · 工作区变化</text>
+  <text x="590" y="382" class="m">style 只记不进提示</text>
+
+  <text x="60" y="408" class="m" font-size="11.5">写操作上限 5 次/天 · 三道闸：单飞锁 / 她还在干 / 8 分钟冷却</text>
+
+  <line x1="390" y1="412" x2="390" y2="452" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="402" y="438" class="m">投递：prompt 整段 → 她自己的 lingxi-* 会话（他屏幕上零字）</text>
+
+  <!-- 3 决策层 -->
+  <rect class="box dec" x="40" y="456" width="700" height="96"/>
+  <text x="60" y="484" class="t">决策层 · 她自己的会话（自治领地）</text>
+  <text x="60" y="508" class="s">读什么 / 写什么 / 动不动工具 / 开不开口 —— 插件在当次完全不知道，也不干预</text>
+  <text x="60" y="532" class="m">投不到她自己的会话 → 跳过这一趟，绝不退回他的会话（信箱模式）</text>
+
+  <line x1="390" y1="552" x2="390" y2="592" stroke="#5b6472" stroke-width="1.4" marker-end="url(#arrow)"/>
+  <text x="402" y="578" class="m">产物落文件（她写，代码读）</text>
+
+  <!-- 4 记忆层 -->
+  <rect class="box mem" x="40" y="596" width="700" height="216"/>
+  <text x="60" y="624" class="t">记忆层 · 她自己那几个本子</text>
+
+  <rect class="box inner" x="60" y="638" width="212" height="70"/>
+  <text x="74" y="660" class="t" font-size="13.5">灵溪日记/YYYY-MM-DD.txt</text>
+  <text x="74" y="680" class="s">四栏 + 「想对他说什么」</text>
+  <text x="74" y="698" class="m">旧的不许改，只能重新解释</text>
+
+  <rect class="box inner" x="284" y="638" width="212" height="70"/>
+  <text x="298" y="660" class="t" font-size="13.5">关于他（三级衰减）</text>
+  <text x="298" y="680" class="s">identity / preference / observation</text>
+  <text x="298" y="698" class="m">带 source：web 的进不了事实层</text>
+
+  <rect class="box inner" x="508" y="638" width="214" height="70"/>
+  <text x="522" y="660" class="t" font-size="13.5">persona/growth.md</text>
+  <text x="522" y="680" class="s">经历流水（只追加）</text>
+  <text x="522" y="698" class="m">最近 5 条进提示 ✅</text>
+
+  <rect class="box inner" x="60" y="722" width="212" height="70"/>
+  <text x="74" y="744" class="t" font-size="13.5">期待 / 任务</text>
+  <text x="74" y="764" class="s">内容她写，状态机跑代码</text>
+  <text x="74" y="782" class="m">assigned 没有「放弃」这个出口</text>
+
+  <rect class="box inner" x="284" y="722" width="212" height="70"/>
+  <text x="298" y="744" class="t" font-size="13.5">.lingxi/style.json</text>
+  <text x="298" y="764" class="s">句长 / 标点密度，一天一条</text>
+  <text x="298" y="782" class="m">⏳ 只记不进提示（Goodhart）</text>
+
+  <rect class="box inner" x="508" y="722" width="214" height="70"/>
+  <text x="522" y="744" class="t" font-size="13.5">.lingxi/ 其余账本</text>
+  <text x="522" y="764" class="s">state · mood · feedback · skill</text>
+  <text x="522" y="782" class="m">recall · rumination</text>
+
+  <!-- 反馈回环：贴右侧但不进边界面板（x ≤ 775） -->
+  <path d="M740 688 C 775 688 775 300 760 300" fill="none" stroke="#b06a2c" stroke-width="1.6" stroke-dasharray="6 5" marker-end="url(#arrowDash)"/>
+  <text x="60" y="830" class="m" fill="#b06a2c">虚线回环：下一趟 tick 读回 —— 回响 / 档位 / 反刍 / 风格 / 经历。只影响下一次，不改当次。</text>
+
+  <!-- 右栏：边界 -->
+  <rect class="box warn" x="790" y="90" width="350" height="482"/>
+  <text x="810" y="118" class="t">边界（代码定死的，不是提示词）</text>
+  <text x="810" y="146" class="s" fill="#a33a3a">✗ 插件不拦工具调用</text>
+  <text x="810" y="166" class="m">没有这个钩子；pre-step 只能加话，不能挡住</text>
+  <text x="810" y="192" class="s" fill="#a33a3a">✗ 不读她浏览了什么、看了多久</text>
+  <text x="810" y="212" class="m">浏览发生在她的会话里，输出只进她的上下文</text>
+  <text x="810" y="238" class="s" fill="#a33a3a">✗ 不复制人格（省 1829 字/趟）</text>
+  <text x="810" y="258" class="m">宿主已注入；core.md 只在宿主没人格时顶上</text>
+  <text x="810" y="284" class="s" fill="#a33a3a">✗ 不改她的心情值</text>
+  <text x="810" y="304" class="m">mood 只由时间/交互事实推进</text>
+
+  <text x="810" y="338" class="t" font-size="14">能力 vs 选择</text>
+  <text x="810" y="362" class="s">pre-step 存在、转录可读（spine 就在读 zstd）</text>
+  <text x="810" y="382" class="s">—— 能力是真的。</text>
+  <text x="810" y="404" class="s">用它数她的工具调用，等于插件伸手进她的领地。</text>
+  <text x="810" y="424" class="s">所以：<tspan fill="#a33a3a">做得到，但我们不做。</tspan></text>
+  <text x="810" y="452" class="m">写清这句，免得将来“技术做不到”掩盖“我们选择不做”</text>
+
+  <text x="810" y="492" class="t" font-size="14">三条铁律（图上的，已验证）</text>
+  <text x="810" y="514" class="s">插件造时间 · 她做决定</text>
+  <text x="810" y="534" class="s">约束写在代码 · 不索取 · 隐瞒≠欺骗</text>
+  <text x="810" y="556" class="m">前两条在架构上成立；第三条靠 source 标签兑现一半</text>
+
+  <!-- 底部：成长 -->
+  <rect class="box host" x="40" y="840" width="1100" height="270"/>
+  <text x="60" y="870" class="t">成长：现在到哪一步</text>
+
+  <rect class="box inner" x="60" y="886" width="330" height="98"/>
+  <text x="74" y="910" class="t" font-size="14">A · 人格与机制解耦　✅ 已上线</text>
+  <text x="74" y="932" class="s">profile.json / voice.json / core.md</text>
+  <text x="74" y="952" class="s">lib 里除 profile.js 出现名字，自检就失败</text>
+  <text x="74" y="972" class="m">换人不用改代码</text>
+
+  <rect class="box inner" x="404" y="886" width="330" height="98"/>
+  <text x="418" y="910" class="t" font-size="14">B · 经历回流　✅ 一半</text>
+  <text x="418" y="932" class="s">growth.md 只追加 → 最近 5 条进提示（只读）</text>
+  <text x="418" y="952" class="s">写权限还在代码外面（人写）</text>
+  <text x="418" y="972" class="m">她记得自己走过的路，但还改不了自己</text>
+
+  <rect class="box inner" x="748" y="886" width="372" height="98"/>
+  <text x="762" y="910" class="t" font-size="14">C · 自改白名单　⏳ 未实现</text>
+  <text x="762" y="932" class="s">五项：自主选择输入 / 措辞 / 详略 / 脚手架 / 重新解释</text>
+  <text x="762" y="952" class="s">永不可：性情 · 身份 · 约束 · 原始记录</text>
+  <text x="762" y="972" class="m">待定：改心情算不算替她决定</text>
+
+  <rect class="box inner" x="60" y="998" width="520" height="96"/>
+  <text x="74" y="1022" class="t" font-size="14">已落地的代码（每条都有自检）</text>
+  <text x="74" y="1044" class="s">来源归一 · 二手不进事实层 · 反刍配额</text>
+  <text x="74" y="1064" class="s">经历 5 条 · 回响事实 · 档位 · 文字走势</text>
+  <text x="74" y="1084" class="m">146 项自检 + 6 组冒烟</text>
+
+  <rect class="box inner" x="596" y="998" width="524" height="96"/>
+  <text x="610" y="1022" class="t" font-size="14">明确放弃的（都有理由，别再加回来）</text>
+  <text x="610" y="1044" class="s">自动漂移检测（要 NLP）· 同质配额（要语义）</text>
+  <text x="610" y="1064" class="s">分区轮转（bili.mjs 不给 tname，输出也不进插件）</text>
+  <text x="610" y="1084" class="m">往他会话里投递（2026-10-27 20:01 实测：他会看见）</text>
+
+  <text x="60" y="1146" class="m">一句话：插件造时间，她做决定，账本只回灌下一次。所有“成长”都发生在文件里，不发生在插件的脑子里。</text>
+</svg>
