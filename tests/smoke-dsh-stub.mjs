@@ -21,6 +21,22 @@ import os from 'node:os'
 import path from 'node:path'
 import zlib from 'node:zlib'
 
+// 2026-10-29 晚：**把时钟钉死**。
+//   原来这套冒烟用真实时间，于是 23:30 之后跑必然全红 —— 因为活跃窗口是 09:00–23:30，
+//   `inWindow` 为假，一次都不投。CI 半夜跑就是红的，而且看起来像代码坏了。
+//   现在钉在 14:00（窗口正中），跟跑测试的钟点无关。
+const FIXED_MS = new Date(2026, 9, 29, 14, 0, 0).getTime()
+const RealDate = Date
+class FrozenDate extends RealDate {
+  constructor(...args) {
+    if (args.length === 0) super(FIXED_MS)
+    else super(...args)
+  }
+  static now() {
+    return FIXED_MS
+  }
+}
+globalThis.Date = FrozenDate
 const ROOT = path.join(os.tmpdir(), 'lingxi-smoke-' + process.pid)
 fs.rmSync(ROOT, { recursive: true, force: true })
 const WORKSPACE = path.join(ROOT, 'ws')

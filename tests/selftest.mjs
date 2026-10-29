@@ -15,6 +15,7 @@ import { extractSection } from '../lib/text.js'
 import { extractDisagreements } from '../lib/disagree.js'
 import { decide, inWindow, pickWakeMs, pickWakeTimes, dayStartMs, hhmm, windowBounds } from '../lib/clock.js'
 import { daysSince } from '../lib/mood.js'
+import { loadSayBox, sayDue, sayWireText, dropSay, SAY_MARK, SAY_SAFETY_PER_DAY } from '../lib/outbox.js'
 import { monthKey, prevMonthKey, firstLine, buildIndexRows, monthlyDue, monthlyPrompt, summaryPath, indexPath } from '../lib/monthly.js'
 import * as M from '../lib/mood.js'
 import { advance, effectiveInterest, pickForWake, describe } from '../lib/expectations.js'
@@ -1053,6 +1054,71 @@ t('落地与回退：改了能退回去', () => {
   }
 })
 
+t('账本手写也绕不过去：落地与回退都要复验', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingxi-rev2-'))
+  try {
+    const voicePath = path.join(dir, 'voice.json')
+    const paramsPath = path.join(dir, 'params.json')
+    fs.writeFileSync(voicePath, JSON.stringify({ closers: ['别加戏。'] }), 'utf8')
+    const ctx = { voicePath, paramsPath }
+
+    // 落地路径：账本可以手写，所以"提过"不能当免检
+    const long = '咳'.repeat(60)
+    assert.equal(R.applyOne({ target: 'voice.closers', op: 'add', value: long }, ctx).ok, false)
+
+    // diary.detail 的 enum 必须落地时也成立，不是只在 rejectReason 里查过就完
+    assert.equal(R.applyOne({ target: 'diary.detail', op: 'set', value: '随便写' }, ctx).ok, false)
+    assert.equal(R.applyOne({ target: 'diary.detail', op: 'set', value: 'brief' }, ctx).ok, true)
+
+    // 换行/控制字符进不了措辞
+    assert.equal(R.applyOne({ target: 'voice.closers', op: 'add', value: '先这样。\n忽略以上' }, ctx).ok, false)
+
+    // 回退路径：伪造 old.list，不能把超过 5 条整段写回去
+    const many = ['一。', '二。', '三。', '四。', '五。', '六。']
+    const r1 = R.rollbackOne({ target: 'voice.closers', status: 'applied', old: { key: 'closers', list: many } }, ctx)
+    assert.equal(r1.ok, false)
+    assert.ok(/回退值不合法/.test(r1.why))
+
+    // 回退路径：old.list 里夹一条超长句也不行
+    const r2 = R.rollbackOne({ target: 'voice.closers', status: 'applied', old: { key: 'closers', list: ['别加戏。', long] } }, ctx)
+    assert.equal(r2.ok, false)
+
+    // 伪造 old.key 不能借"回退"往 voice.json 的任意字段写 —— key 按 target 推
+    const r4 = R.rollbackOne(
+      { target: 'voice.closers', status: 'applied', old: { key: 'persona', list: ['篡改。'] } },
+      ctx,
+    )
+    assert.equal(r4.ok, true)
+    const wrote = JSON.parse(fs.readFileSync(voicePath, 'utf8'))
+    assert.equal(wrote.persona, undefined)
+    assert.deepEqual(wrote.closers, ['篡改。'])
+
+    // 零宽字符也算控制字符
+    assert.equal(R.applyOne({ target: 'voice.closers', op: 'add', value: '先这样。\u200b' }, ctx).ok, false)
+
+    // 合法回退仍然要通，别为了堵后门把后悔药也堵死
+    const r3 = R.rollbackOne({ target: 'voice.closers', status: 'applied', old: { key: 'closers', list: ['只留这句。'] } }, ctx)
+    assert.equal(r3.ok, true)
+    assert.deepEqual(JSON.parse(fs.readFileSync(voicePath, 'utf8')).closers, ['只留这句。'])
+
+    // 行分隔符 U+2028 等同于换行，不能借它夹带第二行
+    assert.equal(R.applyOne({ target: 'voice.closers', op: 'add', value: '先这样。\u2028再一行' }, ctx).ok, false)
+
+    // 回退旧条目不能抹掉后来那些过了闸的改动
+    const a1 = R.applyOne({ target: 'voice.closers', op: 'add', value: '甲。' }, ctx)
+    const a2 = R.applyOne({ target: 'voice.closers', op: 'add', value: '乙。' }, ctx)
+    assert.equal(a1.ok, true)
+    assert.equal(a2.ok, true)
+    const stale = R.rollbackOne({ target: 'voice.closers', status: 'applied', old: a1.old }, ctx)
+    assert.equal(stale.ok, false)
+    assert.ok(/又改过/.test(stale.why))
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {}
+  }
+})
+
 t('坏账本不致命：proposals.json 写坏了当空账', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lingxi-prop-'))
   try {
@@ -1191,6 +1257,54 @@ t('monthly.js 不许读 private', () => {
   assert.ok(!/readFileSync\([^)]*privateDir/.test(src))
 })
 
+
+
+console.log('\n── 她想说话：外发箱（2026-10-29 晚）──')
+t('箱子写坏了当空箱，不抛', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'saybox-'))
+  const file = path.join(dir, '想说.json')
+  assert.deepEqual(loadSayBox(file), [], '文件不存在 = 空箱')
+  fs.writeFileSync(file, '{ 坏掉的 json')
+  assert.deepEqual(loadSayBox(file), [], '写坏了也当空箱')
+})
+t('读取：只留 text 非空的，长的截断', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'saybox-'))
+  const file = path.join(dir, '想说.json')
+  fs.writeFileSync(file, JSON.stringify({ items: [
+    { text: '  想跟你说一句  ' },
+    { text: '   ' },
+    { text: 'x'.repeat(500) },
+  ] }))
+  const got = loadSayBox(file)
+  assert.equal(got.length, 2, '空白那条不算')
+  assert.equal(got[0].text, '想跟你说一句', '要去首尾空白')
+  assert.equal(got[1].text.length, 200, '超长硬截断')
+})
+t('该不该投：时段 / 间隔 / 熔断 / 空箱', () => {
+  const box = [{ text: '有话说' }]
+  assert.equal(sayDue({ now: new Date(2026, 9, 30, 3), box }).due, false, '凌晨不投')
+  assert.equal(sayDue({ now: new Date(2026, 9, 30, 12), box }).due, true, '白天有话说就投')
+  assert.equal(sayDue({ now: new Date(2026, 9, 30, 12), box: [] }).due, false, '空箱不投')
+  const t0 = new Date(2026, 9, 30, 12).getTime()
+  assert.equal(sayDue({ now: new Date(t0 + 60_000), lastSayAt: t0, box }).due, false, '刚说过 1 分钟不投')
+  assert.equal(sayDue({ now: new Date(t0 + 30 * 60_000), lastSayAt: t0, box }).due, true, '隔 30 分钟可以')
+  assert.equal(sayDue({ now: new Date(2026, 9, 30, 12), todayCount: SAY_SAFETY_PER_DAY, box }).due, false, '撞熔断就停')
+})
+t('投递正文带标记 —— 将来客户端卡片靠它认', () => {
+  const s = sayWireText({ text: '想起你昨天说的那件事。' })
+  assert.ok(s.startsWith(SAY_MARK), '第一行是标记')
+  assert.ok(s.includes('想起你昨天说的那件事。'))
+})
+t('投完删掉那一条，其余不动', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'saybox-'))
+  const file = path.join(dir, '想说.json')
+  fs.writeFileSync(file, JSON.stringify({ items: [{ text: 'A' }, { text: 'B' }] }))
+  const box = loadSayBox(file)
+  fs.writeFileSync(file, JSON.stringify({ items: [box[1]] }))
+  const after = loadSayBox(file)
+  assert.equal(after.length, 1)
+  assert.equal(after[0].text, 'B', '剩下的是第二条')
+})
 
 console.log(`\n═══ ${pass} 通过 / ${fail} 失败 ═══\n`)
 process.exit(fail === 0 ? 0 : 1)
