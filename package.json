@@ -8,6 +8,7 @@
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": ["lib", "cordis.patch.yml", "README.md", "profile.example.json", "persona"],
