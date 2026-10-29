@@ -22,6 +22,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createHash } from 'node:crypto'
 import zlib from 'node:zlib'
 
 /* ── 把时钟钉死（smoke-dsh-stub.mjs 踩过的坑，照抄）──────────────────
@@ -246,7 +247,17 @@ console.log('\n── A 她想说话：投递到主会话 ──')
     typeof req?.requestId === 'string' && req.requestId.length > 0,
     JSON.stringify(req?.requestId),
   )
-  check('A7 requestId 形状是 lingxi-say-<日期>-1', req?.requestId === `lingxi-say-${today()}-1`, String(req?.requestId))
+// 2026-10-30 改：id 不再用「日期+计数」，改成**正文内容的哈希**。
+//   原因：计数存在 state 里，写盘失败时不涨 → 下一条复用同一个 id →
+//   若宿主把"同 id"当成功，就会删掉一条用户从没见过的消息。
+//   内容哈希：同一条永远同 id（幂等兜住重复），不同内容永远不同 id（不撞车）。
+const wantId = `lingxi-say-${today()}-` + createHash('sha1').update(sayWireText({ text: '测试一句' })).digest('hex').slice(0, 12)
+check('A7 requestId 由正文内容决定（同一条永远同 id）', req?.requestId === wantId, String(req?.requestId))
+check(
+  'A7b 换一句内容 → 换一个 id（不会撞车）',
+  wantId !== `lingxi-say-${today()}-` + createHash('sha1').update(sayWireText({ text: '另一句' })).digest('hex').slice(0, 12),
+  '两条不同内容的 id 不该相同',
+)
   check(
     'A8 正文只有一段文字（不是拆成两段）',
     req?.content?.length === 1 && req.content[0]?.type === 'text',
