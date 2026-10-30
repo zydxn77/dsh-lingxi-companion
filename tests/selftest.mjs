@@ -13,7 +13,7 @@ import { localDateKey, yesterdayKey, diaryPath, PATHS, readPersona, decidePerson
 import { todayLog } from '../lib/daylog.js'
 import { extractSection } from '../lib/text.js'
 import { extractDisagreements } from '../lib/disagree.js'
-import { decide, inWindow, pickWakeMs, pickWakeTimes, dayStartMs, hhmm, windowBounds } from '../lib/clock.js'
+import { shouldWake, inWindow, hhmm, windowBounds } from '../lib/clock.js'
 import { daysSince } from '../lib/mood.js'
 import { loadSayBox, sayDue, sayWireText, dropSay, sayBoxPath, SAY_MARK, SAY_SAFETY_PER_DAY } from '../lib/outbox.js'
 import { monthKey, prevMonthKey, firstLine, buildIndexRows, monthlyDue, monthlyPrompt, summaryPath, indexPath } from '../lib/monthly.js'
@@ -24,15 +24,17 @@ import { deriveWindow } from '../lib/presence.js'
 import { recallWeight, touchRecall, recallOne } from '../lib/recall.js'
 import { pickFlashback } from '../lib/flashback.js'
 import { recentChanges } from '../lib/workspace.js'
-import { advanceFeedback, recordComplaint, quietDaysBefore } from '../lib/feedback.js'
+import { advanceFeedback, recordComplaint, quietDaysBefore, expectedGapFor } from '../lib/feedback.js'
 import * as P from '../lib/profile.js'
 import * as F from '../lib/facts.js'
 import * as S from '../lib/style.js'
 import * as R from '../lib/revision.js'
 import * as B from '../lib/board.js'
 import { isOwnSessionPath } from '../lib/spine.js'
-import { buildPulse, buildWakeText, buildRoamText, callbackBlock, growthLines } from '../lib/prompt.js'
+import { buildPulse, buildWakeText, callbackBlock, growthLines } from '../lib/prompt.js'
 import * as RM from '../lib/roam.js'
+import * as CL from '../lib/closing.js'
+import * as BK from '../lib/breaker.js'
 import * as C from '../lib/const.js'
 
 let pass = 0
@@ -66,19 +68,10 @@ t('日记路径带日期不带扩展冗余', () => {
   assert.ok(diaryPath('2026-10-26').endsWith('2026-10-26.txt'))
 })
 
-console.log('\n── 生物钟 ───────────────────────────────')
+console.log('\n── 生物钟（2026-10-30 第七刀：概率唤醒）──')
 t('窗口字面量合法', () => {
   const b = windowBounds()
   assert.ok(b.end > b.start)
-})
-t('唤醒时刻落在窗口内', () => {
-  const base = dayStartMs(new Date(2026, 9, 26))
-  const b = windowBounds()
-  for (const r of [0, 0.25, 0.5, 0.999999]) {
-    const ms = pickWakeMs(base, () => r)
-    const mins = (ms - base) / 60000
-    assert.ok(mins >= b.start && mins < b.end, `r=${r} → ${mins} 分`)
-  }
 })
 t('inWindow 左闭右开', () => {
   const [sh, sm] = C.WAKE_WINDOW.start.split(':').map(Number)
@@ -87,73 +80,37 @@ t('inWindow 左闭右开', () => {
   assert.equal(inWindow(new Date(2026, 9, 26, eh, em)), false)
   assert.equal(inWindow(new Date(2026, 9, 26, sh - 1, 59)), false)
 })
-t('今天没计划 → 抽一次签', () => {
-  const d = decide({ state: {}, now: new Date(2026, 9, 26, 10, 0), rng: () => 0.5 })
-  assert.equal(d.action, 'plan')
-  assert.equal(d.plan.key, '2026-10-26')
-  assert.equal(d.plan.skip, false) // 0.5 > 0.3
+t('窗口外不醒', () => {
+  const r = shouldWake({ state: {}, now: new Date(2026, 9, 26, 3, 0), rng: () => 0 })
+  assert.equal(r.wake, false)
+  assert.equal(r.why, '窗口外')
 })
-t('掷到懒日', () => {
-  const d = decide({ state: {}, now: new Date(2026, 9, 26, 10, 0), rng: () => 0.1 })
-  assert.equal(d.plan.skip, true)
+t('刚醒过（最小间隔内）不醒 —— 掷到底也不醒', () => {
+  const now = new Date(2026, 9, 26, 14, 0)
+  const state = { plan: { key: '2026-10-26', lastAt: now.getTime() - 30 * 60_000, count: 1 } }
+  const r = shouldWake({ state, now, rng: () => 0 })
+  assert.equal(r.wake, false)
+  assert.equal(r.why, '刚醒过')
 })
-t('计划落盘后重启不重抽', () => {
-  const now = new Date(2026, 9, 26, 10, 0)
-  const first = decide({ state: {}, now, rng: () => 0.5 })
-  const again = decide({ state: { plan: first.plan }, now, rng: () => 0.9 })
-  assert.notEqual(again.action, 'plan')
-  assert.equal(again.plan.atMs, first.plan.atMs)
+t('过了最小间隔 → 骰子说了算', () => {
+  const now = new Date(2026, 9, 26, 14, 0)
+  const state = { plan: { key: '2026-10-26', lastAt: now.getTime() - C.MIN_GAP_MS - 1000, count: 2 } }
+  assert.equal(shouldWake({ state, now, rng: () => 0 }).wake, true, '掷到底就该醒')
+  assert.equal(shouldWake({ state, now, rng: () => 0.9999 }).wake, false, '掷到顶就不醒')
 })
-t('一趟一趟地醒：done 递增，到上限就 idle', () => {
-  const t0 = new Date(2026, 9, 26, 9, 0).getTime()
-  const plan = {
-    key: '2026-10-26',
-    skip: false,
-    times: [t0 + 60 * 60000, t0 + 300 * 60000, t0 + 600 * 60000],
-    done: 0,
-  }
-  const at = (i) => new Date(plan.times[i])
-  assert.equal(decide({ state: { plan }, now: new Date(plan.times[0] - 1000) }).action, 'wait')
-  assert.equal(decide({ state: { plan }, now: at(0) }).action, 'wake')
-  assert.equal(decide({ state: { plan }, now: at(0) }).index, 0)
-  const after1 = { ...plan, done: 1 }
-  assert.equal(decide({ state: { plan: after1 }, now: at(1) }).index, 1)
-  const after3 = { ...plan, done: 3 }
-  assert.equal(decide({ state: { plan: after3 }, now: at(2) }).action, 'idle')
+t('概率 = tick / 期望间隔（3 小时 → 每分钟约 1/180）', () => {
+  const now = new Date(2026, 9, 26, 14, 0)
+  const N = 20000
+  let hits = 0
+  for (let i = 0; i < N; i++) if (shouldWake({ state: {}, now, expectedGapMs: C.EXPECTED_GAP_MS }).wake) hits += 1
+  const rate = hits / N
+  const want = 60_000 / C.EXPECTED_GAP_MS
+  assert.ok(Math.abs(rate - want) < want * 0.25, `期望 ${want.toFixed(5)}，实际 ${rate.toFixed(5)}`)
 })
-t('旧格式账本（只有 atMs/wokeAt）→ 今天不补', () => {
-  const legacy = { key: '2026-10-26', atMs: 0, skip: false, wokeAt: 123, speaks: 1 }
-  assert.equal(decide({ state: { plan: legacy }, now: new Date(2026, 9, 26, 23, 0) }).action, 'idle')
-})
-t('跨天重新抽签', () => {
-  const legacy = { key: '2026-10-25', atMs: 0, skip: false, wokeAt: 123, speaks: 1 }
-  assert.equal(decide({ state: { plan: legacy }, now: new Date(2026, 9, 26, 9, 1), rng: () => 0.5 }).action, 'plan')
-})
-t('每天抽到 3 趟，且升序、互不挨着', () => {
-  // 用一串伪随机跑很多次 —— 只测一次是测不出「最坏情况挨在一起」的。
-  let seed = 12345
-  const rnd = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648)
-  for (let round = 0; round < 200; round++) {
-    const d = decide({ state: {}, now: new Date(2026, 9, 26, 8, 0), maxOpenings: 3, rng: rnd })
-    assert.equal(d.plan.times.length, d.plan.skip ? 1 : 3, '懒日 1 趟，正常 3 趟')
-    const sorted = [...d.plan.times].sort((a, b) => a - b)
-    assert.deepEqual(d.plan.times, sorted, '时刻必须升序')
-    for (let i = 1; i < d.plan.times.length; i++) {
-      const gapMin = (d.plan.times[i] - d.plan.times[i - 1]) / 60000
-      assert.ok(gapMin >= 55, `第 ${i} 段间隔只有 ${gapMin.toFixed(1)} 分（第 ${round} 轮）`)
-    }
-  }
-})
-t('懒日只抽 1 趟', () => {
-  const d = decide({ state: {}, now: new Date(2026, 9, 26, 8, 0), rng: () => 0.1 })
-  assert.equal(d.plan.skip, true)
-  assert.equal(d.plan.times.length, 1)
-})
-t('沉默档压低趟数', () => {
-  const few = decide({ state: {}, now: new Date(2026, 9, 26, 8, 0), maxOpenings: 1, rng: () => 0.5 })
-  assert.equal(few.plan.times.length, 1)
-  const two = decide({ state: {}, now: new Date(2026, 9, 26, 8, 0), maxOpenings: 2, rng: () => 0.5 })
-  assert.equal(two.plan.times.length, 2)
+t('档位只拉长间隔，不保底次数', () => {
+  assert.equal(expectedGapFor(C.TIER_DEFAULT), C.EXPECTED_GAP_MS, '常态就是基准')
+  assert.ok(expectedGapFor(2) > expectedGapFor(3), '降一档要更长')
+  assert.ok(expectedGapFor(1) > expectedGapFor(2), '再降更长')
 })
 t('hhmm 补零', () => {
   assert.equal(hhmm(new Date(2026, 9, 26, 9, 4).getTime()), '09:04')
@@ -208,25 +165,12 @@ t('有报时、有今天日记路径', () => {
   assert.ok(text.includes('【到点了】15:30。'))
   assert.ok(text.includes('灵溪日记/2026-10-26.txt'))
 })
-t('懒日：只写日记，不做三件事', () => {
-  const text = buildWakeText({ now: now0, plan: { skip: true }, daysSinceHeard: 1 })
-  assert.ok(text.includes('今天不想动'))
-  assert.ok(text.includes('灵溪日记/2026-10-26.txt'))
-  assert.ok(!text.includes('做三件事'))
-})
-t('正常日：写着第几趟、共几趟', () => {
-  const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 1, total: 3 })
-  assert.ok(text.includes('第 2 趟（共 3 趟）'))
-  // 2026-10-27 改：额度从「义务」改成「判断」——
-  //   还剩几趟要说，但必须同时说清「那不是还得再说几次」。
-  assert.ok(text.includes('还剩 1 趟'), '说还剩几趟')
-  assert.ok(text.includes('额度不是义务'), '额度不是义务，这句不能少')
-  assert.ok(text.includes('没有就别开口'), '开口由她定')
-})
-t('最后一趟也把话说清：只剩 0 趟，不是"还得说 0 次"', () => {
-  const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 2, total: 3 })
-  assert.ok(text.includes('还剩 0 趟'))
-  assert.ok(text.includes('额度不是义务'))
+t('不再写「第几趟 / 共几趟 / 还剩几趟」—— 次数没了（第七刀）', () => {
+  const text = buildWakeText({ now: now0, plan: { count: 2 }, daysSinceHeard: 1 })
+  assert.ok(!/第 \d+ 趟/.test(text), '不该再出现「第 N 趟」')
+  assert.ok(!/共 \d+ 趟/.test(text), '不该再出现「共 N 趟」')
+  assert.ok(!/还剩 \d+ 趟/.test(text), '不该再出现「还剩 N 趟」')
+  assert.ok(!text.includes('额度不是义务'), '没有额度了，这句也删掉')
 })
 t('faint 档：提示里也不许开口', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 9, index: 0, total: 1 })
@@ -335,26 +279,6 @@ t('搁置的不会被提起', () => {
   const nowIso = new Date().toISOString()
   const s = { items: [{ topic: 'z', baseInterest: 0.9, stage: 'shelved', note: '', updated: nowIso, related: [] }] }
   assert.equal(pickForWake(s), null)
-})
-
-console.log('\n── 加权抽签 ─────────────────────────────')
-t('偏向他常在的小时', () => {
-  const base = dayStartMs(new Date(2026, 9, 26))
-  // 只让 21 点有权重
-  const w = new Array(24).fill(0.01)
-  w[21] = 100
-  let hits = 0
-  for (let i = 0; i < 400; i++) {
-    const t = pickWakeTimes(base, 1, Math.random, w)[0]
-    if (new Date(t).getHours() === 21) hits += 1
-  }
-  assert.ok(hits > 300, `权重压到 21 点后命中应该很多，实际 ${hits}/400`)
-})
-t('没有权重时退回均匀（不退化成 0）', () => {
-  const base = dayStartMs(new Date(2026, 9, 26))
-  const set = new Set()
-  for (let i = 0; i < 60; i++) set.add(new Date(pickWakeTimes(base, 1, Math.random, null)[0]).getHours())
-  assert.ok(set.size > 3, `null 权重应该能抽到多个小时，实际 ${set.size}`)
 })
 
 console.log('\n── 任务账本（铁律 5）─────────────────────')
@@ -513,14 +437,18 @@ t('集中在白天 → 窗口落在白天', () => {
   assert.ok(e >= 19 && e <= 23, `终点应在晚上，实际 ${win.end}`)
   assert.ok(e - s >= 4, '窗口至少 4 小时')
 })
-t('漂出来的窗口能被抽签用', () => {
-  const base = dayStartMs(new Date(2026, 9, 26))
+t('漂出来的窗口，shouldWake 只在那里面醒', () => {
   const win = { start: '20:00', end: '23:00' }
-  for (let i = 0; i < 40; i++) {
-    const t = pickWakeTimes(base, 1, Math.random, null, win)[0]
-    const h = new Date(t).getHours()
-    assert.ok(h >= 20 && h < 23, `应该落在 20–22，实际 ${h}`)
-  }
+  assert.equal(
+    shouldWake({ state: {}, now: new Date(2026, 9, 26, 19, 30), window: win, rng: () => 0 }).wake,
+    false,
+    '19:30 在窗口外',
+  )
+  assert.equal(
+    shouldWake({ state: {}, now: new Date(2026, 9, 26, 21, 0), window: win, rng: () => 0 }).wake,
+    true,
+    '21:00 在窗口内',
+  )
 })
 
 console.log('\n── L2 能力段（9 号，提示词级）────────────')
@@ -1171,56 +1099,93 @@ t('唤醒提示里：日记要求用称呼写，不是中性记录', () => {
   assert.ok(text.includes('这话我能当面说出口吗'), '要给她判断汇报腔的尺子')
 })
 
-t('唤醒提示里：最后一趟要看板重写（重写不是追加）', () => {
-  const last = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1, index: 2, total: 3 })
-  assert.ok(last.includes('把看板重写一遍'))
-  assert.ok(last.includes('看板可以忘，日记不许改'), '这句是原则，不能省')
-  const first = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 3 })
-  assert.ok(!first.includes('把看板重写一遍'), '第一趟不该提重写')
+t('唤醒提示里：过了 BOARD_HOUR 才提看板重写（重写不是追加）', () => {
+  const late = new Date(2026, 9, 26, C.BOARD_HOUR, 5)
+  const text = buildWakeText({ now: late, plan: { count: 3 }, daysSinceHeard: 1 })
+  assert.ok(text.includes('把看板重写一遍'))
+  assert.ok(text.includes('看板可以忘，日记不许改'), '这句是原则，不能省')
+  const early = buildWakeText({ now: NOW15, plan: { count: 1 }, daysSinceHeard: 1 })
+  assert.ok(!early.includes('把看板重写一遍'), '白天不该提重写')
 })
 
-console.log('\n── 游荡趟（2026-10-28）──')
-t('游荡：一天 1–2 趟，落在窗口内，且按时间排好', () => {
-  const now = new Date(2026, 9, 28, 9, 0, 0)
-  let saw1 = false
-  let saw2 = false
-  for (let i = 0; i < 80; i++) {
-    const p = RM.planRoamDay(now)
-    assert.ok(p.times.length >= 1 && p.times.length <= RM.ROAM_MAX_PER_DAY)
-    assert.equal(p.done, 0)
-    assert.equal(p.key, '2026-10-28')
-    for (const x of p.times) {
-      const h = new Date(x).getHours()
-      assert.ok(h >= 9 && h <= 23, `窗口外：${h} 点`)
-    }
-    for (let j = 1; j < p.times.length; j++) assert.ok(p.times[j] >= p.times[j - 1], '没排序')
-    if (p.times.length === 1) saw1 = true
-    if (p.times.length === 2) saw2 = true
+console.log('\n── 收尾趟（2026-10-30 第六刀，架构 §7.7 A 案）──')
+t('收尾：只看「昨天收过没有」，不看她过得怎么样', () => {
+  const now = new Date(2026, 9, 30, 9, 5)
+  assert.equal(CL.closingDue(now, {}), true, '没有记录 = 今天该收')
+  assert.equal(CL.closingDue(now, { closingDay: '2026-10-29' }), false, '昨天收过了，不再收')
+  assert.equal(CL.closingDue(now, { closingDay: '2026-10-28' }), true, '前天收的 ≠ 昨天收的')
+})
+
+t('收尾：跨天只认昨天，前天永远不补（§7.7 兜底）', () => {
+  const now = new Date(2026, 9, 30, 9, 5)
+  assert.equal(yesterdayKey(now), '2026-10-29')
+  // 连续两天没开机（上次收在 27 日）→ 今天仍要收，但收的是「昨天」那一份，中间不补
+  assert.equal(CL.closingDue(now, { closingDay: '2026-10-27' }), true)
+  // 收完之后账上就只有昨天 —— 前天再也轮不到
+  assert.equal(CL.closingDue(now, { closingDay: yesterdayKey(now) }), false)
+})
+
+t('收尾提示：只给路径与事实，不给祈使', () => {
+  const p = CL.closingPrompt({ now: new Date(2026, 9, 30, 9, 5) })
+  assert.ok(p.includes('2026-10-29') || p.includes('日记'), '要指到昨天那一份')
+  assert.ok(!/整理|总结|回顾|写日记|必须|应该|记得/.test(p), '不许出现祈使或任务词（§7.4）')
+  assert.ok(p.length < 400, `太长了：${p.length}`)
+})
+
+t('closing.js 不判断「昨天过得怎么样」', () => {
+  const src = fs.readFileSync(new URL('../lib/closing.js', import.meta.url), 'utf8')
+  assert.ok(!/privateDir/.test(src), '不许碰 private')
+  assert.ok(!/(energy|affinity|freshness|mood\.json)/.test(src), '不许读任何状态值（铁律 2）')
+  assert.ok(!/gradeDiary|score|rating/.test(src), '不许给她打分')
+})
+
+console.log('\n── 风险暂停（2026-10-30，断路器）──')
+t('连续失败到阈值才停，之前一次都不停', () => {
+  const now = new Date(2026, 9, 30, 14, 0)
+  let s = { plan: { done: 1 } }
+  for (let i = 1; i < BK.BREAKER_THRESHOLD; i++) {
+    s = BK.breakerFail(s, now, '测试')
+    assert.equal(BK.breakerOpen(s, now), false, `第 ${i} 次不该停`)
   }
-  assert.ok(saw1 && saw2, '两种趟数都该出现过')
+  s = BK.breakerFail(s, now, '测试')
+  assert.equal(BK.breakerOpen(s, now), true, `第 ${BK.BREAKER_THRESHOLD} 次该停`)
+  assert.equal(s.breaker.n, BK.BREAKER_THRESHOLD)
+  assert.equal(s.plan.done, 1, '不许动 state 里别的字段')
 })
 
-t('游荡：到点才算，用完就不再响', () => {
-  const now = new Date(2026, 9, 28, 12, 0, 0)
-  const plan = { key: '2026-10-28', times: [now.getTime() + 60000], done: 0 }
-  assert.equal(RM.roamDue(plan, now).due, false, '还没到')
-  const later = new Date(now.getTime() + 120000)
-  const d = RM.roamDue(plan, later)
-  assert.equal(d.due, true)
-  assert.equal(d.index, 0)
-  assert.equal(d.total, 1)
-  const after = RM.markRoamDone(plan, 0)
-  assert.equal(RM.roamDue(after, later).due, false, '用完了不该再响')
+t('暂停是持久的：冷却期内一直关着，过了才放一次试探', () => {
+  const now = new Date(2026, 9, 30, 14, 0)
+  let s = {}
+  for (let i = 0; i < BK.BREAKER_THRESHOLD; i++) s = BK.breakerFail(s, now, 'x')
+  const half = new Date(now.getTime() + BK.BREAKER_COOLDOWN_MS / 2)
+  assert.equal(BK.breakerOpen(s, half), true, '冷却期内不该放')
+  const after = new Date(now.getTime() + BK.BREAKER_COOLDOWN_MS + 1000)
+  assert.equal(BK.breakerOpen(s, after), false, '冷却过了要放一次试探')
 })
 
-t('游荡：那段话里必须有「没有作业」和「也可以待着」', () => {
-  const text = buildRoamText({ now: new Date(2026, 9, 28, 21, 30), index: 0, total: 1 })
-  assert.ok(text.includes('没有作业'))
-  assert.ok(text.includes('也可以就待着'), '少了这句，它又变成打卡了')
-  assert.ok(text.includes('读片.mjs'))
-  assert.ok(text.includes('灵溪-游荡.md'))
-  assert.ok(text.includes('.bili-home'), '沙箱那个坑必须写进提示')
-  assert.ok(text.length < 700, `太长了：${text.length}`)
+t('投成一次就关掉，计数清零，别的字段不动', () => {
+  const now = new Date(2026, 9, 30, 14, 0)
+  let s = { plan: { done: 2 }, failStreak: 0 }
+  for (let i = 0; i < BK.BREAKER_THRESHOLD; i++) s = BK.breakerFail(s, now, 'x')
+  assert.equal(BK.breakerOpen(s, now), true)
+  s = BK.breakerOk(s)
+  assert.equal(BK.breakerOpen(s, now), false, '投成了就该关')
+  assert.equal(s.failStreak, 0)
+  assert.equal(s.breaker, undefined)
+  assert.equal(s.plan.done, 2, '不许动 state 里别的字段')
+})
+
+t('老账本没有 breaker 字段时一切正常', () => {
+  const now = new Date(2026, 9, 30, 14, 0)
+  assert.equal(BK.breakerOpen({}, now), false)
+  assert.equal(BK.breakerOpen(null, now), false)
+  assert.equal(BK.breakerWhy({}, now), '')
+})
+
+t('breaker.js 不读她的状态，也不碰 private', () => {
+  const src = fs.readFileSync(new URL('../lib/breaker.js', import.meta.url), 'utf8')
+  assert.ok(!/privateDir|diary/.test(src), '不许读她的记忆')
+  assert.ok(!/(energy|affinity|freshness)/.test(src), '不许读状态值（铁律 2）')
 })
 
 console.log('\n── 月度重读（2026-10-29 第五刀，架构 §13）──')

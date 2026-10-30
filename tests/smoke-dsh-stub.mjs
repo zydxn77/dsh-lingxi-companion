@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 冒烟测试：拿桩件顶替 DSH 的 sessionController，把 apply() 真跑一遍。
  *
  *   node tests/smoke-dsh-stub.mjs
@@ -26,17 +26,26 @@ import zlib from 'node:zlib'
 //   `inWindow` 为假，一次都不投。CI 半夜跑就是红的，而且看起来像代码坏了。
 //   现在钉在 14:00（窗口正中），跟跑测试的钟点无关。
 const FIXED_MS = new Date(2026, 9, 29, 14, 0, 0).getTime()
+// 2026-10-30：改成可拨的 —— H 场景要测「11-01 的月度并进收尾」。
+let NOW_MS = FIXED_MS
+const setNow = (ms) => {
+  NOW_MS = ms
+}
 const RealDate = Date
 class FrozenDate extends RealDate {
   constructor(...args) {
-    if (args.length === 0) super(FIXED_MS)
+    if (args.length === 0) super(NOW_MS)
     else super(...args)
   }
   static now() {
-    return FIXED_MS
+    return NOW_MS
   }
 }
 globalThis.Date = FrozenDate
+
+// 2026-10-30 第七刀：醒来改成概率了，冒烟里把它钉死 —— 掷到底，保证「该醒就醒」。
+//   要测「不醒」的场景（窗口外 / 最小间隔内 / 暂停期）另有条件挡住，不受这个影响。
+Math.random = () => 0.0001
 const ROOT = path.join(os.tmpdir(), 'lingxi-smoke-' + process.pid)
 fs.rmSync(ROOT, { recursive: true, force: true })
 const WORKSPACE = path.join(ROOT, 'ws')
@@ -48,7 +57,7 @@ fs.mkdirSync(SESSIONS, { recursive: true })
 process.env.LINGXI_WORKSPACE = WORKSPACE
 process.env.DSH_HOME = DSH
 
-const { PATHS, localDateKey, writeState, readState, readJson } = await import('../lib/home.js')
+const { PATHS, localDateKey, yesterdayKey, writeState, readState, readJson } = await import('../lib/home.js')
 const { apply } = await import('../lib/index.js')
 const { findMainSession } = await import('../lib/spine.js')
 const { MAX_FAILS_PER_SLOT, PULSE_TEXT, SCAFFOLD_SOURCE_KIND } = await import('../lib/const.js')
@@ -134,13 +143,17 @@ function ageAll(ms = 3600_000) {
 }
 
 const today = () => localDateKey(new Date())
+// 2026-10-30 第六刀：每天第一趟是**收尾趟**。
+//   A/B/C 这些场景测的是「日记趟」的行为，所以先把「昨天已收」写上，
+//   否则第一趟全被收尾占掉，测的就不是原来那条链了。收尾自己由 E 场景单测。
+const YD = yesterdayKey(new Date())
 const seedPlan = (over = {}) => ({
   key: today(),
-  skip: false,
-  times: [Date.now() - 1000, Date.now() + 3_600_000, Date.now() + 7_200_000],
-  done: 0,
+  // 2026-10-30 第七刀：不再有 times —— lastAt 是「上次醒的时间」，0 = 没有冷却。
+  //   count 只统计今天醒过几次，不限制。
+  lastAt: 0,
+  count: 0,
   fails: 0,
-  deferSlot: null,
   deferSince: null,
   ...over,
 })
@@ -163,7 +176,7 @@ console.log('\n── A0 认主会话 ──')
 console.log('\n── A 正常一趟 ──')
 {
   ageAll() // 会话拨旧，免得「他正在用」闸把这一趟压住
-  writeState({ plan: seedPlan() })
+  writeState({ plan: seedPlan(), closingDay: YD })
   const { ctx, rec } = makeCtx()
   apply(ctx, {})
   await settle()
@@ -182,7 +195,7 @@ console.log('\n── A 正常一趟 ──')
   }
 
   const st = readState()
-  check(st.plan?.done === 1, `A 记账 done 应为 1，实际 ${st.plan?.done}`)
+  check(st.plan?.count === 1, `A 记账 count 应为 1，实际 ${st.plan?.count}`)
   check(st.plan?.lastSessionId === 'session-main', `A 记账 lastSessionId 不对：${st.plan?.lastSessionId}`)
   check(Number.isFinite(st.selfQuietUntil), 'A 应该记下 selfQuietUntil（那段窗口里 mtime 变新算她自己动的）')
   check(st.selfQuietUntil > Date.now(), 'A selfQuietUntil 应该在未来')
@@ -200,7 +213,7 @@ console.log('\n── A 正常一趟 ──')
 console.log('\n── A2 脉冲 + 指令 ──')
 {
   ageAll()
-  writeState({ plan: seedPlan() })
+  writeState({ plan: seedPlan(), closingDay: YD })
   const { ctx, rec } = makeCtx({ __bus: true })
   apply(ctx, {})
   await settle()
@@ -255,7 +268,7 @@ console.log('\n── B 他正在用 ──')
   // 主会话刚被动过 → 他正在说话
   const f = path.join(SESSIONS, '--ws--', 'session-main', SESSION_FILE)
   fs.utimesSync(f, new Date(), new Date())
-  writeState({ plan: seedPlan(), heardAt: Date.now() - 30 * 60_000, selfQuietUntil: 0 })
+  writeState({ plan: seedPlan(), heardAt: Date.now() - 30 * 60_000, selfQuietUntil: 0, closingDay: YD })
   const { ctx, rec } = makeCtx()
   apply(ctx, {})
   await settle()
@@ -263,7 +276,7 @@ console.log('\n── B 他正在用 ──')
   check(rec.sent.length === 0, `B 不该插话，实际插了 ${rec.sent.length}`)
   const st = readState()
   check(Number.isFinite(st.plan?.deferSince), 'B 应该记下 deferSince')
-  check(st.plan?.done === 0, `B done 不该前进，实际 ${st.plan?.done}`)
+  check(st.plan?.count === 0, `B count 不该前进，实际 ${st.plan?.count}`)
   console.log('  记账 :', JSON.stringify(st.plan))
   stopAll(rec)
 }
@@ -273,7 +286,7 @@ console.log('\n── C1 失败一次记一次 ──')
 {
   const f = path.join(SESSIONS, '--ws--', 'session-main', SESSION_FILE)
   fs.utimesSync(f, new Date(Date.now() - 3600_000), new Date(Date.now() - 3600_000))
-  writeState({ plan: seedPlan() })
+  writeState({ plan: seedPlan(), closingDay: YD })
   const { ctx, rec } = makeCtx()
   ctx.sessionController = failCtrl(rec)
   apply(ctx, {})
@@ -281,7 +294,7 @@ console.log('\n── C1 失败一次记一次 ──')
 
   const st = readState()
   check(st.plan?.fails === 1, `C1 fails 应为 1，实际 ${st.plan?.fails}`)
-  check(st.plan?.done === 0, `C1 done 不该前进，实际 ${st.plan?.done}`)
+  check(st.plan?.count === 0, `C1 count 不该前进，实际 ${st.plan?.count}`)
   console.log('  记账 :', JSON.stringify(st.plan))
   stopAll(rec)
 }
@@ -290,20 +303,173 @@ console.log('\n── C1 失败一次记一次 ──')
 console.log('\n── C2 连续失败到上限就熔断 ──')
 {
   ageAll()
-  writeState({ plan: seedPlan({ fails: MAX_FAILS_PER_SLOT - 1 }) })
+  writeState({ plan: seedPlan({ fails: MAX_FAILS_PER_SLOT - 1 }), closingDay: YD })
   const { ctx, rec } = makeCtx()
   ctx.sessionController = failCtrl(rec)
   apply(ctx, {})
   await settle()
 
   const st = readState()
-  check(st.plan?.done === 1, `C2 熔断后 done 应前进到 1，实际 ${st.plan?.done}`)
+  check(st.plan?.count === 1, `C2 熔断后 count 应为 1，实际 ${st.plan?.count}`)
   check(st.plan?.fails === 0, `C2 熔断后 fails 应清零，实际 ${st.plan?.fails}`)
-  check(Array.isArray(st.plan?.burned) && st.plan.burned.includes(1), 'C2 burned 应记下第 1 趟')
+  check(Number.isFinite(st.plan?.lastAt) && st.plan.lastAt > 0, 'C2 熔断后要把 lastAt 推到当下（进最小间隔，不再连撞）')
   console.log('  记账 :', JSON.stringify(st.plan))
   stopAll(rec)
 }
 
+/* ─────────── E 收尾趟：每天第一趟收昨天 ─────────── */
+console.log('\n── E 收尾趟 ──')
+{
+  ageAll()
+  // 昨天还没收过 → 这一趟该是**收尾**，不是日记趟
+  writeState({ plan: seedPlan(), closingDay: null })
+  const { ctx, rec } = makeCtx()
+  apply(ctx, {})
+  await settle()
+
+  const st = readState()
+  check(rec.sent.length === 1, `E 收尾趟该投 1 次，实际 ${rec.sent.length}`)
+  const r = rec.sent[0]
+  if (r) {
+    check(r.requestId === `lingxi-close-${YD}`, `E requestId 应是收尾键，实际 ${r.requestId}`)
+    const text = r.content?.[0]?.text ?? ''
+    check(text.includes('一天的尾巴'), 'E 该是收尾提示')
+    check(!/整理|总结|必须|应该/.test(text), 'E 提示里不许有祈使（§7.4）')
+  }
+  check(st.closingDay === YD, `E 该记下 closingDay=${YD}，实际 ${st.closingDay}`)
+  check(st.plan?.count === 0, `E 收尾趟不该动日记趟的账，实际 count=${st.plan?.count}`)
+  console.log('  记账 :', JSON.stringify({ closingDay: st.closingDay, count: st.plan?.count }))
+  stopAll(rec)
+}
+
+/* ─────────── F 风险暂停：停了就一个字都不投 ─────────── */
+console.log('\n── F 风险暂停 ──')
+{
+  ageAll()
+  // 账上记着「连着投不出去 5 次，刚发生」→ 这一趟该直接停
+  writeState({
+    plan: seedPlan(),
+    closingDay: YD,
+    failStreak: 5,
+    breaker: { at: Date.now() - 60_000, n: 5, reason: '测试' },
+  })
+  const { ctx, rec } = makeCtx()
+  apply(ctx, {})
+  await settle()
+
+  check(rec.sent.length === 0, `F 暂停期内不许投递，实际投了 ${rec.sent.length}`)
+  const st = readState()
+  check(st.breaker?.n === 5, 'F 账上的暂停记录不该被清掉')
+  check(st.plan?.count === 0, `F 暂停期内不该动账，实际 count=${st.plan?.count}`)
+  console.log('  记账 :', JSON.stringify({ breaker: st.breaker?.n, failStreak: st.failStreak }))
+  stopAll(rec)
+}
+
+{
+  ageAll()
+  // 差一次就打开：ownSession 强制开，但这里一个 lingxi-* 会话都没有 → 投不到 → 计入失败
+  process.env.LINGXI_OWN_SESSION = '1'
+  writeState({ plan: seedPlan(), closingDay: YD, failStreak: 4 })
+  const { ctx, rec } = makeCtx()
+  apply(ctx, {})
+  await settle()
+  delete process.env.LINGXI_OWN_SESSION
+
+  const st = readState()
+  check(rec.sent.length === 0, `F2 投不到就不该投，实际投了 ${rec.sent.length}`)
+  check(
+    st.breaker?.n === 5,
+    `F2 第 5 次该把断路器打开，实际 failStreak=${st.failStreak} breaker=${st.breaker?.n}`,
+  )
+  console.log('  记账 :', JSON.stringify({ breaker: st.breaker?.n, failStreak: st.failStreak }))
+  stopAll(rec)
+}
+
+/* ─────────── H 月度并进收尾（§13.2 定稿，2026-10-30）─────────── */
+console.log('\n── H 月度并进收尾 ──')
+{
+  setNow(new Date(2026, 10, 1, 10, 0, 0).getTime()) // 11-01 10:00
+  ageAll()
+  // 月度重读要求「有日记可读」，否则 monthlyDue 返回 false
+  fs.mkdirSync(PATHS.diaryDir, { recursive: true })
+  fs.writeFileSync(path.join(PATHS.diaryDir, '2026-10-31.txt'), '2026-10-31\n\n那天留下了点东西。\n', 'utf8')
+  writeState({ plan: seedPlan({ key: '2026-11-01' }), closingDay: null, monthly: null })
+  const { ctx, rec } = makeCtx()
+  apply(ctx, {})
+  await settle()
+
+  check(rec.sent.length === 1, `H 该投 1 次（收尾+月度合一），实际 ${rec.sent.length}`)
+  const r = rec.sent[0]
+  if (r) {
+    const text = r.content?.[0]?.text ?? ''
+    check(text.includes('一天的尾巴'), 'H 要含收尾段')
+    check(text.includes('又到一个月了'), 'H 要含月度段')
+    check(r.requestId === 'lingxi-close-2026-10-31', `H requestId 应是收尾键，实际 ${r.requestId}`)
+  }
+  const st = readState()
+  check(st.closingDay === '2026-10-31', `H closingDay 应为 2026-10-31，实际 ${st.closingDay}`)
+  check(st.monthly === '2026-11', `H monthly 应记为 2026-11，实际 ${st.monthly}`)
+  console.log('  记账 :', JSON.stringify({ closingDay: st.closingDay, monthly: st.monthly }))
+  setNow(FIXED_MS)
+  stopAll(rec)
+}
+/* ─────────── H2 收尾已做、月度没做 → 概率醒补做（glm-5.3 指出的盲区）─────────── */
+console.log('\n── H2 月度兜底 ──')
+{
+  // 挪到 12-01：H 场景把进程内的 memMonthly 设成了 2026-11，同月会挡住这一测
+  setNow(new Date(2026, 11, 1, 12, 0, 0).getTime()) // 12-01 12:00
+  ageAll()
+  // 收尾今天做过了，但月度没并进来 —— 这时概率醒要单独补一次月度
+  writeState({ plan: seedPlan({ key: '2026-12-01' }), closingDay: '2026-11-30', monthly: null })
+  const { ctx, rec } = makeCtx()
+  apply(ctx, {})
+  await settle()
+
+  check(rec.sent.length === 1, `H2 该投 1 次（概率醒补月度），实际 ${rec.sent.length}`)
+  const text = rec.sent[0]?.content?.[0]?.text ?? ''
+  check(text.includes('又到一个月了'), 'H2 要含月度段')
+  check(!text.includes('一天的尾巴'), 'H2 不该再含收尾段')
+  check(readState().monthly === '2026-12', `H2 monthly 应记 2026-12，实际 ${readState().monthly}`)
+  console.log('  记账 :', JSON.stringify({ monthly: readState().monthly }))
+  setNow(FIXED_MS)
+  stopAll(rec)
+}
+/* ─────────── H3 1–3 日可补、4 日不补（glm-5.3 指出的盲区）─────────── */
+console.log('\n── H3 补做窗口 ──')
+{
+  // 11-03：还在 1–3 日内 → 收尾 + 月度合并
+  setNow(new Date(2026, 10, 3, 10, 0, 0).getTime())
+  ageAll()
+  writeState({ plan: seedPlan({ key: '2026-11-03' }), closingDay: null, monthly: null })
+  {
+    const { ctx, rec } = makeCtx()
+    apply(ctx, {})
+    await settle()
+    const text = rec.sent[0]?.content?.[0]?.text ?? ''
+    check(rec.sent.length === 1, `H3a 11-03 该投 1 次，实际 ${rec.sent.length}`)
+    check(text.includes('一天的尾巴') && text.includes('又到一个月了'), 'H3a 11-03 该含收尾+月度')
+    check(readState().monthly === '2026-11', `H3a monthly 应为 2026-11，实际 ${readState().monthly}`)
+    console.log('  记账 :', JSON.stringify({ monthly: readState().monthly }))
+    stopAll(rec)
+  }
+
+  // 11-04：过了 3 日 → 只收尾，月度不做
+  setNow(new Date(2026, 10, 4, 10, 0, 0).getTime())
+  ageAll()
+  writeState({ plan: seedPlan({ key: '2026-11-04' }), closingDay: null, monthly: null })
+  {
+    const { ctx, rec } = makeCtx()
+    apply(ctx, {})
+    await settle()
+    const text = rec.sent[0]?.content?.[0]?.text ?? ''
+    check(rec.sent.length === 1, `H3b 11-04 该投 1 次，实际 ${rec.sent.length}`)
+    check(text.includes('一天的尾巴'), 'H3b 11-04 该含收尾段')
+    check(!text.includes('又到一个月了'), 'H3b 11-04 过了 3 日，不该再做月度')
+    check(readState().monthly === null, `H3b monthly 应仍为空，实际 ${readState().monthly}`)
+    stopAll(rec)
+  }
+  setNow(FIXED_MS)
+}
 /* ─────────── D 心情层已拆除 ─────────── */
 console.log('\n── D 心情层已拆除 ──')
 {
@@ -323,7 +489,7 @@ if (problems.length) {
   } catch {}
   process.exit(1)
 }
-console.log('✓ 冒烟通过（6 组场景）')
+console.log('✓ 冒烟通过（13 组场景）')
 try {
   fs.rmSync(ROOT, { recursive: true, force: true })
 } catch {}
