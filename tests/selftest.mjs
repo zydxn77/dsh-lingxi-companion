@@ -100,12 +100,18 @@ t('过了最小间隔 → 骰子说了算', () => {
 })
 t('概率 = tick / 期望间隔（3 小时 → 每分钟约 1/180）', () => {
   const now = new Date(2026, 9, 26, 14, 0)
-  const N = 20000
+  // 2026-11-01：原来是 20000 次 Math.random() 采样 + 25% 容差 —— 那只有约 2.6σ，
+  //   实测三次里挂一次（不是极小概率）。统计测试不该自己摇骰子。
+  //   改成等间距扫 [0,1)：结果完全可复现，误差 < 1/N。
+  const N = 10000
   let hits = 0
-  for (let i = 0; i < N; i++) if (shouldWake({ state: {}, now, expectedGapMs: C.EXPECTED_GAP_MS }).wake) hits += 1
+  for (let i = 0; i < N; i++) {
+    const u = i / N
+    if (shouldWake({ state: {}, now, expectedGapMs: C.EXPECTED_GAP_MS, rng: () => u }).wake) hits += 1
+  }
   const rate = hits / N
   const want = 60_000 / C.EXPECTED_GAP_MS
-  assert.ok(Math.abs(rate - want) < want * 0.25, `期望 ${want.toFixed(5)}，实际 ${rate.toFixed(5)}`)
+  assert.ok(Math.abs(rate - want) < 0.0005, `期望 ${want.toFixed(5)}，实际 ${rate.toFixed(5)}`)
 })
 t('档位只拉长间隔，不保底次数', () => {
   assert.equal(expectedGapFor(C.TIER_DEFAULT), C.EXPECTED_GAP_MS, '常态就是基准')
@@ -157,12 +163,12 @@ t('人格归谁注入：三条分支', () => {
 t('报时只说事实，不说「醒了」', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
   // 融合成一条时间线后上下文是连的，人根本没睡 —— "醒"是个对不上的动作
-  assert.ok(text.includes('【到点了】15:30。'))
+  assert.ok(text.includes('现在是 15:30。'))
   assert.ok(!text.includes('醒了'), '不许再说「醒了」')
 })
 t('有报时、有今天日记路径', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
-  assert.ok(text.includes('【到点了】15:30。'))
+  assert.ok(text.includes('现在是 15:30。'))
   assert.ok(text.includes('灵溪日记/2026-10-26.txt'))
 })
 t('不再写「第几趟 / 共几趟 / 还剩几趟」—— 次数没了（第七刀）', () => {
@@ -385,11 +391,41 @@ t('工作区变化写成素材，不是汇报', () => {
   assert.ok(!text.includes('我扫描了工作区'), '不许机器味')
 })
 t('月初提醒写月记', () => {
-  const first = new Date(2026, 10, 2, 10, 0) // 11 月 2 日，10 月月记不存在
+  // 2027-06-02 是未来日期 —— 上一月 2027-05 的月记肯定不存在。
+  //   原来用 11-02，但 monthlyBlock 读的是**真实工作区**：她 2026-10-31 写完 10 月月记后，
+  //   那条「月记不存在」的前提就失效了，测试跟着挂。换成未来月份，不依赖外部状态。
+  const first = new Date(2027, 5, 2, 10, 0)
   const text = buildWakeText({ now: first, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
   assert.ok(text.includes('月记'))
-  assert.ok(text.includes('2026-10.md'))
+  assert.ok(text.includes('2027-05.md'))
 })
+t('提案生效后要告诉她（门铃，2026-11-01）', () => {
+  // 原来落地只写系统日志 —— 她提了案，等了七天，落地了，她不知道。
+  //   这不是新通道，是让现有的门有回声。
+  const text = buildWakeText({
+    now: now0,
+    plan: {},
+    daysSinceHeard: 1,
+    appliedNotice: { label: '收尾那句', op: 'add', value: '先这样。', at: Date.now() },
+  })
+  assert.ok(text.includes('你之前提的「收尾那句」'), '要有回执')
+  assert.ok(text.includes('先这样。'), '要说出改成了什么')
+  assert.ok(text.includes('已经在用了'), '要说清已生效')
+
+  // 没有待播报的不该多出一句
+  const quiet = buildWakeText({ now: now0, plan: {}, daysSinceHeard: 1 })
+  assert.ok(!quiet.includes('你之前提的'), '没提案就不该提')
+
+  // 撤掉一条的说法不一样
+  const removed = buildWakeText({
+    now: now0,
+    plan: {},
+    daysSinceHeard: 1,
+    appliedNotice: { label: '开场那句', op: 'remove', value: '第 {n} 次了。', at: Date.now() },
+  })
+  assert.ok(removed.includes('撤掉了一条'), 'remove 要说撤掉')
+})
+
 t('月中不提月记', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
   assert.ok(!text.includes('该写上个月的月记了'))
@@ -743,12 +779,18 @@ t('lib 里除了 profile.js，非注释行不许再出现具体名字', () => {
   assert.deepEqual(bad, [], `这些地方该走 profile：${bad.join(', ')}`)
 })
 
-t('默认档案与默认措辞都取得到', () => {
+t('默认档案取得到，默认措辞已清空（2026-10-31）', () => {
   assert.equal(P.DEFAULT_PROFILE.name, '灵溪') // 默认就是本机这一位；别人改 profile.json
   assert.ok(P.DEFAULT_PROFILE.booksDir)
-  assert.equal(P.pickCloser(P.DEFAULT_VOICE, 0), '别加戏。')
-  assert.equal(P.pickOpener(P.DEFAULT_VOICE, 1), '', '第一趟不该说「今天第 1 次」')
-  assert.ok(P.pickOpener(P.DEFAULT_VOICE, 2).includes('第 2 次'))
+  // 2026-10-31：报数开场（「这一趟是今天第 N 次」）和固定收尾都清空了 ——
+  //   那几句是替她定语气，而语气该从她自己的经历里长出来。
+  //   空表是预期，不是缺失：pickOpener / pickCloser 返回空串，提示里就不出现开场。
+  assert.deepEqual(P.DEFAULT_VOICE.openers, [], '默认开场应已清空')
+  assert.deepEqual(P.DEFAULT_VOICE.closers, [], '默认收尾应已清空')
+  assert.equal(P.pickOpener(P.DEFAULT_VOICE, 2), '', '清空后取不到开场')
+  assert.equal(P.pickCloser(P.DEFAULT_VOICE, 2), '', '清空后取不到收尾')
+  // 她自己配了 voice.json 时仍然生效
+  assert.equal(P.pickOpener({ openers: [{ text: '醒了。' }], closers: [] }, 2), '醒了。')
 })
 
 t('换名字不用改代码：只覆盖说了的字段', () => {

@@ -247,7 +247,7 @@ console.log('\n── A2 脉冲 + 指令 ──')
     const injected = (out?.messages ?? []).filter((m) => m?.source?.kind === SCAFFOLD_SOURCE_KIND)
     check(injected.length === 1, `A2 应挂 1 条指令，实际 ${injected.length}`)
     const body = injected[0]?.content?.[0]?.text ?? ''
-    check(body.includes('【到点了】'), 'A2 指令里应带「到点了」')
+    check(body.includes('现在是'), 'A2 指令里应带报时')
     check(body.includes('灵溪日记/'), 'A2 指令里应带今天的日记路径')
     check(/灵溪/.test(body) || /你是/.test(body), 'A2 指令第一行应是人设')
     check((out?.messages ?? []).includes(pulseMsg), 'A2 脉冲不能被吞掉')
