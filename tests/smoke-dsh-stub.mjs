@@ -470,6 +470,23 @@ console.log('\n── H3 补做窗口 ──')
   }
   setNow(FIXED_MS)
 }
+/* ─────────── I 启动日志不许静默降级（2026-11-02）─────────── */
+console.log('\n── I 启动日志 ──')
+{
+  // 为什么要测这个：describeCadence 里漏了一个 import（windowBounds），
+  //   结果冒烟全绿、自检全绿，真机日志却打印「间隔算不出来」——
+  //   因为整段包在 try/catch 里，降级被吞掉了。
+  //   这条测试专门盯「不许降级」。
+  check(typeof apply.describeCadence === 'function', 'I describeCadence 应挂到 apply 上')
+
+  const line = apply.describeCadence()
+  console.log('  日志 :', line)
+  check(line.includes('平均'), 'I 日志要说出实际间隔')
+  check(line.includes('倍率'), 'I 日志要带上窗口倍率（glm 复核指出的老 bug）')
+  check(line.includes('档位'), 'I 日志要带上档位')
+  check(!line.includes('算不出来'), 'I 不许静默降级 —— 降级说明有符号没导入')
+}
+
 /* ─────────── D 心情层已拆除 ─────────── */
 console.log('\n── D 心情层已拆除 ──')
 {
@@ -489,7 +506,7 @@ if (problems.length) {
   } catch {}
   process.exit(1)
 }
-console.log('✓ 冒烟通过（13 组场景）')
+console.log('✓ 冒烟通过（14 组场景）')
 try {
   fs.rmSync(ROOT, { recursive: true, force: true })
 } catch {}
