@@ -675,28 +675,52 @@ t('脉冲里不含任何教学内容', () => {
   assert.ok(!/到点了|灵溪|人设|日记|收工/.test(pulse))
 })
 
-t('回响：他说过话时只给事实，不替他判「接没接」', () => {
-  const got = buildWakeText({
+t('回响只带她那句原话，不判断他应没应（2026-11-02 改）', () => {
+  // 撤掉了「他说过话 / 还没开过口」两个分支：
+  //   静默期假阴性（他回得越快她越被告知"没动静"）、「写下≠送达」、以及
+  //   「有动静」近乎零信息量 —— 那是一个有时会说谎的回音。
+  //   留下的是「她上次说过什么」：事实、不说谎、不暗示。
+  const withWords = buildWakeText({
     now: NOW15,
     plan: { skip: false },
     daysSinceHeard: 0,
-    echo: { heardAfterLastWake: true, msSinceLastWake: 2 * 3600_000, msSinceHeard: 10 * 60_000 },
+    echo: { lastWords: { text: '平方根是该用的', pending: false } },
   })
-  assert.ok(got.includes('他说过话'))
-  assert.ok(got.includes('以你上下文里看到的话为准'), '内容判据归她，代码不许替她判')
-  assert.ok(got.includes('代码只看得见他动没动过'))
+  assert.ok(withWords.includes('你上次写给他的，是这句'), '日记来的要说是"写给他的"')
+  assert.ok(withWords.includes('「平方根是该用的」'), '要原样带回她那句')
+
+  // 外发箱来的：她"想说还没说成"，措辞不能叫"说"
+  const pending = buildWakeText({
+    now: NOW15,
+    plan: { skip: false },
+    daysSinceHeard: 0,
+    echo: { lastWords: { text: '工具顺手的时候，用的人还剩多少判断。', pending: true } },
+  })
+  assert.ok(pending.includes('压在自己手里'), '没送出去的要如实说没送出去')
+  assert.ok(!pending.includes('你上次写给他的'), '没送出去的不能说成写给了')
+  assert.ok(!pending.includes('你上次对他说的是'), '更不叫"说了"')
+
+  // 关键：不出现任何「他动没动 / 应没应」的判断
+  assert.ok(!/他说过话|还没开过口|有动静|没动静/.test(withWords), '不许出现他动没动的判断')
+  assert.ok(!/以你上下文里看到的话为准/.test(withWords), '那句空许诺也该一起删掉')
+
+  // 没有 lastWords 时不该凭空造一句
+  const empty = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 0, echo: {} })
+  assert.ok(!/你上次对他说的是/.test(empty), '没话就不提')
 })
 
-t('回响：他还没开口时不索取', () => {
+t('回响不提「他有没有开口」，所以不会诱导她追问或变轻', () => {
+  // 旧版在「他没开过口」时会写「别追问 / 轻一点」——
+  //   那两句本身就泄露了「他可能没理你」这个推断，等于代码先替她判了。
+  //   现在根本没有这个分支，所以既不会索取，也不会替她降调门。
   const got = buildWakeText({
     now: NOW15,
     plan: { skip: false },
     daysSinceHeard: 0,
-    echo: { heardAfterLastWake: false, msSinceLastWake: 5 * 3600_000, msSinceHeard: 5 * 3600_000 },
+    echo: { lastWords: { text: '工具顺手的时候，用的人还剩多少判断。', pending: false } },
   })
-  assert.ok(got.includes('还没开过口'))
-  assert.ok(got.includes('别追问'), '没应不等于可以追问 —— 索取是禁忌')
-  assert.ok(got.includes('轻一点'))
+  assert.ok(!/别追问|轻一点|还没开过口/.test(got), '不许出现暗示"他没理你"的措辞')
+  assert.ok(got.includes('工具顺手的时候'), '但仍然带出她自己的原话')
 })
 
 t('没有上一趟就不提回响', () => {
