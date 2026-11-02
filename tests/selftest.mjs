@@ -13,7 +13,7 @@ import { localDateKey, yesterdayKey, diaryPath, PATHS, readPersona, decidePerson
 import { todayLog } from '../lib/daylog.js'
 import { extractSection } from '../lib/text.js'
 import { extractDisagreements } from '../lib/disagree.js'
-import { shouldWake, inWindow, hhmm, windowBounds } from '../lib/clock.js'
+import { shouldWake, inWindow, hhmm, windowBounds, windowScale } from '../lib/clock.js'
 import { daysSince } from '../lib/mood.js'
 import { loadSayBox, sayDue, sayWireText, dropSay, sayBoxPath, SAY_MARK, SAY_SAFETY_PER_DAY } from '../lib/outbox.js'
 import { monthKey, prevMonthKey, firstLine, buildIndexRows, monthlyDue, monthlyPrompt, summaryPath, indexPath } from '../lib/monthly.js'
@@ -113,6 +113,28 @@ t('概率 = tick / 期望间隔（3 小时 → 每分钟约 1/180）', () => {
   const want = 60_000 / C.EXPECTED_GAP_MS
   assert.ok(Math.abs(rate - want) < 0.0005, `期望 ${want.toFixed(5)}，实际 ${rate.toFixed(5)}`)
 })
+t('间隔跟窗口走：窗口越短，间隔越短（2026-11-02）', () => {
+  // 原来 3 小时是死的 —— 窗口一短，一天醒的次数就跟着塌陷，
+  //   「一天几次」仍然是窗口的副产品，只是没人说破。
+  //   现在间隔 = 档位 × windowScale(窗口)。基准窗口 14.5 小时对应倍率 1。
+  const base = { start: '09:00', end: '23:30' } // 14.5h
+  assert.ok(Math.abs(windowScale(base) - 1) < 1e-9, '基准窗口倍率应为 1')
+
+  const short = { start: '20:00', end: '23:00' } // 3h
+  const long = { start: '00:00', end: '23:00' } // 23h
+  assert.ok(windowScale(short) < 0.6, `3h 窗口倍率应明显小于 1，实际 ${windowScale(short)}`)
+  assert.ok(windowScale(long) > 1.2, `23h 窗口倍率应明显大于 1，实际 ${windowScale(long)}`)
+  assert.ok(windowScale(short) < windowScale(long), '窗口短 → 间隔短')
+
+  // 用平方根而不是正比：窗口减半，倍率不会减半（否则次数反而翻倍）
+  const half = { start: '09:00', end: '16:15' } // 7.25h = 基准的一半
+  const sc = windowScale(half)
+  assert.ok(sc > 0.5 && sc < 0.8, `半窗口倍率应落在 0.5–0.8（平方根），实际 ${sc}`)
+
+  // ⚠️ 这条只跟窗口走，不跟她走 —— 函数签名里没有任何"她的状态"
+  assert.equal(windowScale.length, 1, 'windowScale 只该收一个参数（窗口）')
+})
+
 t('档位只拉长间隔，不保底次数', () => {
   assert.equal(expectedGapFor(C.TIER_DEFAULT), C.EXPECTED_GAP_MS, '常态就是基准')
   assert.ok(expectedGapFor(2) > expectedGapFor(3), '降一档要更长')
