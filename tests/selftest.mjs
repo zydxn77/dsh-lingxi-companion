@@ -191,7 +191,7 @@ t('报时只说事实，不说「醒了」', () => {
 t('有报时、有今天日记路径', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false, speaks: 0 }, daysSinceHeard: 1 })
   assert.ok(text.includes('现在是 15:30。'))
-  assert.ok(text.includes('灵溪日记/2026-10-26.txt'))
+  assert.ok(text.includes('灵溪/日记/2026-10-26.txt'))
 })
 t('不再写「第几趟 / 共几趟 / 还剩几趟」—— 次数没了（第七刀）', () => {
   const text = buildWakeText({ now: now0, plan: { count: 2 }, daysSinceHeard: 1 })
@@ -513,7 +513,7 @@ console.log('\n── L2 能力段（9 号，提示词级）──────�
 t('写着能自己做什么、以及写操作上限', () => {
   const text = buildWakeText({ now: now0, plan: { skip: false }, daysSinceHeard: 1, index: 0, total: 1 })
   assert.ok(text.includes('你能自己动手，不用问'))
-  assert.ok(text.includes('灵溪日记/'))
+  assert.ok(text.includes('灵溪/日记/'))
   assert.ok(text.includes(`写操作一天以 ${C.DAILY_WRITE_BUDGET} 次为限`))
 })
 t('措辞是「分寸」不是「系统禁止」', () => {
@@ -540,7 +540,7 @@ t('夜里才提梦，白天不提', () => {
 })
 t('梦写在自己的目录里，且不进事实层', () => {
   const text = buildWakeText({ now: new Date(2026, 9, 26, 23, 0), plan: { skip: false }, daysSinceHeard: 1, offerDream: true })
-  assert.ok(text.includes('灵溪日记/梦/2026-10-26.md'))
+  assert.ok(text.includes('灵溪/日记/梦/2026-10-26.md'))
 })
 
 console.log('\n── 召回层（recency 加权）──────────────────')
@@ -657,7 +657,7 @@ t('硬编码值没被改成离谱的东西', () => {
 })
 t('工作区路径解析出来了', () => {
   assert.ok(PATHS.workspace.includes('default-workspace'))
-  assert.ok(PATHS.diaryDir.endsWith('灵溪日记'))
+  assert.ok(PATHS.diaryDir.endsWith('日记'))
 })
 
 console.log('\n── 短脉冲 / 指令 / 回响（2026-10-27 拆两段）──')
@@ -732,7 +732,7 @@ t('没有上一趟就不提回响', () => {
 t('日记段：每趟先读今天的，路径必须还在提示里', () => {
   const key = localDateKey(NOW15)
   const got = buildWakeText({ now: NOW15, plan: { skip: false }, daysSinceHeard: 1 })
-  assert.ok(got.includes(`灵溪日记/${key}.txt`), '压缩可能吃掉路径，所以每趟重给')
+  assert.ok(got.includes(`灵溪/日记/${key}.txt`), '压缩可能吃掉路径，所以每趟重给')
 })
 
 t('日记段：已有内容时给末尾，不给整份', () => {
@@ -1366,7 +1366,7 @@ t('箱路径必须能算出来（2026-10-29 那条 undefined 的回归）', () =
   // 所以 23:00 之后跑一切正常，白天 9–22 点每分钟刷一条错 —— 这种最难发现。
   assert.equal(typeof P.DEFAULT_PROFILE.sayBox, 'string')
   assert.ok(P.DEFAULT_PROFILE.sayBox.length > 0, '默认档案里 sayBox 不能是空串')
-  assert.ok(sayBoxPath().endsWith(P.DEFAULT_PROFILE.sayBox), '箱路径应以 sayBox 结尾')
+  assert.ok(sayBoxPath().endsWith(P.DEFAULT_PROFILE.sayBox.split('/').pop()), '箱路径应以 sayBox 结尾')
 })
 
 console.log(`\n═══ ${pass} 通过 / ${fail} 失败 ═══\n`)
